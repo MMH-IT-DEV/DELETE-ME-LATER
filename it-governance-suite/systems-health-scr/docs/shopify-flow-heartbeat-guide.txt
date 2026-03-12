@@ -1,0 +1,170 @@
+Shopify Flow — Heartbeat Setup Guide
+=====================================
+Generated: 2026-03-02
+Applies to: 2026_Systems-Health-Tracker > System Registry
+
+PREREQUISITES
+-------------
+- Shopify plan must be Grow, Advanced, or Plus (Send HTTP Request is NOT available on Basic)
+- Health Monitor Google Apps Script must be deployed as Web App (doPost)
+- HEALTH_MONITOR_URL = the /exec URL of the deployed Apps Script
+
+ACTION: "Send HTTP Request"
+---------------------------
+Add this action natively inside any Shopify Flow workflow.
+Configure:
+  Method:  POST
+  URL:     {{HEALTH_MONITOR_URL}}   (paste the full /exec URL)
+  Headers:
+    Content-Type : application/json
+  Body:    (see per-flow templates below)
+
+RESPONSE TIMEOUT: Flow waits max 30 seconds. Apps Script must respond within 30s.
+SECRETS: Store the URL or any token in Flow > Settings > Secrets and reference as {{secrets.handle}}.
+
+
+=== CONDITIONAL FLOWS (add HTTP step on BOTH branches) ===
+
+For flows that only trigger actions when a condition is met, you MUST add the
+Send HTTP Request on BOTH the Then branch (condition met) AND the Otherwise/Else
+branch (condition not met). This ensures a heartbeat fires on every order,
+not just when the condition is satisfied.
+
+────────────────────────────────────────────────────────────────
+FLOW 1: Repeat High-Volume Purchase Detection
+Trigger: Order Created
+────────────────────────────────────────────────────────────────
+Placement: Inside THEN branch AND inside OTHERWISE branch
+
+THEN branch body (condition met — repeat high-volume order detected):
+{
+  "system": "Repeat High-Volume Purchase Detection",
+  "status": "success",
+  "condition_met": true,
+  "details": "order={{order.name}},customer={{order.email}}"
+}
+
+OTHERWISE branch body (normal order — condition not met):
+{
+  "system": "Repeat High-Volume Purchase Detection",
+  "status": "success",
+  "condition_met": false,
+  "details": "order={{order.name}},customer={{order.email}}"
+}
+
+────────────────────────────────────────────────────────────────
+FLOW 2: High Quantity Order Review
+Trigger: Order Created
+────────────────────────────────────────────────────────────────
+Placement: Inside THEN branch AND inside OTHERWISE branch
+
+THEN branch body (high-quantity order flagged):
+{
+  "system": "High Quantity Order Review",
+  "status": "success",
+  "condition_met": true,
+  "details": "order={{order.name}},customer={{order.email}}"
+}
+
+OTHERWISE branch body:
+{
+  "system": "High Quantity Order Review",
+  "status": "success",
+  "condition_met": false,
+  "details": "order={{order.name}},customer={{order.email}}"
+}
+
+────────────────────────────────────────────────────────────────
+FLOW 5: Add Gift When 2+ 4oz Products Ordered
+Trigger: Order Created
+────────────────────────────────────────────────────────────────
+Placement: Inside THEN branch AND inside OTHERWISE branch
+
+THEN branch body (gift added):
+{
+  "system": "Add Gift When 2+ 4oz Products Ordered",
+  "status": "success",
+  "condition_met": true,
+  "details": "order={{order.name}},customer={{order.email}}"
+}
+
+OTHERWISE branch body:
+{
+  "system": "Add Gift When 2+ 4oz Products Ordered",
+  "status": "success",
+  "condition_met": false,
+  "details": "order={{order.name}},customer={{order.email}}"
+}
+
+
+=== NON-CONDITIONAL FLOWS (add HTTP step as FIRST step) ===
+
+For flows triggered by specific events (hold, hold-release, cancel),
+the trigger itself is the signal — add Send HTTP Request as the FIRST action
+(before any other steps or conditions) to capture every trigger event.
+
+────────────────────────────────────────────────────────────────
+FLOW 3: Shopify Hold → ShipStation Hold Sync
+Trigger: Fulfillment Order Placed on Hold
+────────────────────────────────────────────────────────────────
+Placement: FIRST action in the workflow (before ShipStation API call)
+
+Body:
+{
+  "system": "Shopify Hold → ShipStation Hold Sync",
+  "status": "success",
+  "details": "fulfillment={{fulfillmentOrder.id}}"
+}
+
+────────────────────────────────────────────────────────────────
+FLOW 4: Shopify Hold Release → ShipStation Release
+Trigger: Fulfillment Order Hold Released
+────────────────────────────────────────────────────────────────
+Placement: FIRST action in the workflow
+
+Body:
+{
+  "system": "Shopify Hold Release → ShipStation Release",
+  "status": "success",
+  "details": "fulfillment={{fulfillmentOrder.id}}"
+}
+
+────────────────────────────────────────────────────────────────
+FLOW 6: Shopify Cancel → ShipStation Cancel
+Trigger: Order Cancelled
+────────────────────────────────────────────────────────────────
+Placement: FIRST action in the workflow
+
+Body:
+{
+  "system": "Shopify Cancel → ShipStation Cancel",
+  "status": "success",
+  "details": "order={{order.name}},customer={{order.email}}"
+}
+
+
+HOW THE HEALTH MONITOR INTERPRETS THESE
+-----------------------------------------
+The doPost() handler in the Health Monitor Apps Script receives the JSON body.
+It looks for:
+  payload.system  → matches a row in System Registry by System Name
+  payload.status  → "success" or "error"
+  payload.details → stored in Last Heartbeat notes
+  payload.condition_met → (optional) stored for conditional flow tracking
+
+Status is updated to "Healthy" on any "success" heartbeat received.
+Status updates to "Degraded" if no heartbeat received within the threshold window.
+Status updates to "Down" if payload.status === "error".
+
+HOW TO SET THE URL
+-------------------
+Option A (simple): Paste the full /exec URL directly into the URL field.
+Option B (secure): Store in Shopify Secrets → reference as {{secrets.health_monitor_url}}
+  This prevents the URL from being visible in the workflow editor.
+
+TESTING A FLOW HEARTBEAT
+-------------------------
+1. Open the flow in Shopify Admin → Flow
+2. Click "Test workflow" (uses test order data)
+3. Watch the Health Monitor sheet — Status should flip to "Healthy" within ~60s
+4. Also check the Webhook Queue tab for the raw received payload

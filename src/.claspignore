@@ -1,0 +1,4 @@
+# Push only .js files and the manifest — ignore everything else
+**
+!*.js
+!appsscript.json

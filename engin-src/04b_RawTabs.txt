@@ -1,0 +1,1694 @@
+/**
+ * Raw Tabs - Katana, Wasp, and Batch tab writers
+ * Uses ONLY GAS-compatible syntax: var, no const/let, no arrow functions
+ */
+
+// -------------------------------------------------------
+// Location color palettes
+// -------------------------------------------------------
+var KATANA_LOCATION_COLORS = {
+  'MMH Kelowna':        '#1565c0',
+  'Shopify':            '#00897b',
+  'Storage Warehouse':  '#6a1b9a'
+};
+
+var WASP_LOCATION_COLORS = {
+  'Amazon USA|AMAZON-FBA-USA':  '#01579b',
+  'MMH Kelowna|MMH Kelowna':    '#37474f',
+  'MMH Kelowna|RECEIVING-DOCK': '#b71c1c',
+  'MMH Kelowna|PROD-RECEIVING': '#e65100',
+  'MMH Kelowna|PRODUCTION':     '#1565c0',
+  'MMH Kelowna|SHIPPING-DOCK':  '#1b5e20',
+  'MMH Kelowna|SHOPIFY':        '#00897b',
+  'MMH Kelowna|SW-RECEIVING':   '#4a148c',
+  'MMH Kelowna|UNSORTED':       '#ff6f00',
+  'MMH Kelowna|QA-Hold-1':      '#880e4f',
+  'MMH Kelowna|QA-Hold-2':      '#880e4f',
+  'MMH Kelowna|QA-Hold-4':      '#880e4f',
+  'MMH Kelowna|QA-Hold-5':      '#880e4f',
+  'Storage Warehouse|SW-STORAGE': '#6a1b9a'
+};
+
+// Aisle group colors — matched by first letter of location code (A-01 → A, B-05 → B, etc.)
+var WASP_AISLE_COLORS = {
+  'A': '#33691e',
+  'B': '#0277bd',
+  'C': '#ad1457',
+  'D': '#4e342e',
+  'E': '#558b2f',
+  'F': '#00838f'
+};
+
+var DEFAULT_SEP_COLOR = '#424242';
+
+// Categories that should NOT auto-sync to WASP (stay as NEW for manual review)
+var AUTO_SYNC_SKIP_CATEGORIES = ['DEVICES', 'DIGITAL PRODUCT', 'TOOLS/HARDWARE', 'EQUIPMENT'];
+
+// -------------------------------------------------------
+// Shared helpers
+// -------------------------------------------------------
+
+function safeDate(dateVal) {
+  if (!dateVal) return '';
+  var s = String(dateVal);
+  if (s.indexOf('T') > -1) s = s.split('T')[0];
+  if (!s || s.length < 4) return '';
+  var year = parseInt(s.substring(0, 4), 10);
+  if (isNaN(year) || year < 2020) return '';
+  return s;
+}
+
+function getDiffColor(diff) {
+  if (diff === 0) return { bg: null, fg: '#9e9e9e' };
+  if (diff > 0)   return { bg: '#c8e6c9', fg: '#2e7d32' };
+  return           { bg: '#ffcdd2', fg: '#c62828' };
+}
+
+function formatDiffValue(diff) {
+  if (diff > 0) return '+' + diff;
+  return diff;
+}
+
+function getRawSeparatorColor(locationKey, colorMap) {
+  return colorMap[locationKey] || DEFAULT_SEP_COLOR;
+}
+
+// Returns ordered list of ALL WASP locations (site+location pairs).
+// Programmatically generates aisle rows to match docs/locations.
+function buildAllWaspLocations_() {
+  var locs = [];
+  locs.push({ site: 'Amazon USA',        location: 'AMAZON-FBA-USA' });
+  locs.push({ site: 'MMH Kelowna',       location: 'MMH Kelowna' });
+  locs.push({ site: 'MMH Kelowna',       location: 'RECEIVING-DOCK' });
+  locs.push({ site: 'MMH Kelowna',       location: 'SHIPPING-DOCK' });
+  locs.push({ site: 'MMH Kelowna',       location: 'PRODUCTION' });
+  locs.push({ site: 'MMH Kelowna',       location: 'PROD-RECEIVING' });
+  locs.push({ site: 'MMH Kelowna',       location: 'SHOPIFY' });
+  locs.push({ site: 'MMH Kelowna',       location: 'SW-RECEIVING' });
+  locs.push({ site: 'MMH Kelowna',       location: 'UNSORTED' });
+  locs.push({ site: 'MMH Kelowna',       location: 'QA-Hold-1' });
+  locs.push({ site: 'MMH Kelowna',       location: 'QA-Hold-2' });
+  locs.push({ site: 'MMH Kelowna',       location: 'QA-Hold-4' });
+  locs.push({ site: 'MMH Kelowna',       location: 'QA-Hold-5' });
+  var aisleDefs = [
+    { letter: 'A', count: 14 },
+    { letter: 'B', count: 33 },
+    { letter: 'C', count: 32 },
+    { letter: 'D', count: 24 },
+    { letter: 'E', count: 24 },
+    { letter: 'F', count: 21 }
+  ];
+  for (var ai = 0; ai < aisleDefs.length; ai++) {
+    var aisle = aisleDefs[ai];
+    for (var n = 1; n <= aisle.count; n++) {
+      var pad = n < 10 ? '0' + n : String(n);
+      locs.push({ site: 'MMH Kelowna', location: aisle.letter + '-' + pad });
+    }
+  }
+  locs.push({ site: 'Storage Warehouse', location: 'SW-STORAGE' });
+  return locs;
+}
+
+// Returns the separator color for a WASP location.
+// Checks exact site|location match, then aisle group (e.g. A-01 → A), then default.
+function getWaspLocColor_(site, location) {
+  var exactKey = site + '|' + location;
+  if (WASP_LOCATION_COLORS[exactKey]) return WASP_LOCATION_COLORS[exactKey];
+  // Aisle group: location like "A-01" → first letter "A"
+  if (location && location.length >= 4 && location.charAt(1) === '-') {
+    var aisleKey = location.charAt(0);
+    if (WASP_AISLE_COLORS[aisleKey]) return WASP_AISLE_COLORS[aisleKey];
+  }
+  return DEFAULT_SEP_COLOR;
+}
+
+function setupRawHeader(sheet, headers, colWidths) {
+  var numCols = headers.length;
+  var hRange = sheet.getRange(1, 1, 1, numCols);
+  hRange.setValues([headers]);
+  hRange.setBackground('#263238');
+  hRange.setFontColor('#ffffff');
+  hRange.setFontWeight('bold');
+  hRange.setFontSize(10);
+  sheet.setFrozenRows(1);
+  for (var c = 0; c < colWidths.length; c++) {
+    sheet.setColumnWidth(c + 1, colWidths[c]);
+  }
+}
+
+function clearRawSheet(sheet) {
+  if (!sheet) return;
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+  if (lastRow > 1 && lastCol > 0) {
+    var dataRange = sheet.getRange(2, 1, lastRow - 1, lastCol);
+    dataRange.clearContent();
+    dataRange.clearFormat();
+    dataRange.clearDataValidations();
+  }
+  sheet.setConditionalFormatRules([]);
+}
+
+// Build total qty by SKU from an items array
+function buildTotalBySku_(items, skuField, qtyField) {
+  var map = {};
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i];
+    var sku = item[skuField];
+    if (!sku || isSkippedSku(sku)) continue;
+    if (!map[sku]) map[sku] = 0;
+    map[sku] += (parseFloat(item[qtyField]) || 0);
+  }
+  return map;
+}
+
+
+// Filter WASP items to remove aggregate (no-lot) rows for SKUs that have
+// per-lot rows. Prevents double-counting in buildTotalBySku_.
+function filterWaspItemsForTotals_(waspItems) {
+    var skusWithLots = {};
+    for (var i = 0; i < waspItems.length; i++) {
+        if (waspItems[i].itemNumber && waspItems[i].lot) {
+            skusWithLots[waspItems[i].itemNumber] = true;
+        }
+    }
+    var filtered = [];
+    for (var j = 0; j < waspItems.length; j++) {
+        var item = waspItems[j];
+        if (!item.itemNumber) continue;
+        if (skusWithLots[item.itemNumber] && !item.lot) continue;
+        filtered.push(item);
+    }
+    return filtered;
+}
+// Compute match status by comparing Katana total vs WASP total for a SKU
+// source: 'KATANA' or 'WASP' - tells us which tab we're on
+function computeCrossMatch_(sku, katanaTotals, waspTotals, source) {
+  var inKatana = katanaTotals.hasOwnProperty(sku);
+  var inWasp = waspTotals.hasOwnProperty(sku);
+  var kTotal = Math.round((katanaTotals[sku] || 0) * 100) / 100;
+  var wTotal = Math.round((waspTotals[sku] || 0) * 100) / 100;
+
+  // Item only in one system
+  if (source === 'KATANA' && !inWasp) return 'KATANA ONLY';
+  if (source === 'WASP' && !inKatana) return 'WASP ONLY';
+
+  // Both have 0 stock
+  if (kTotal === 0 && wTotal === 0) return 'ZERO';
+
+  // Both exist - compare
+  if (Math.abs(kTotal - wTotal) < 0.01) return 'MATCH';
+  return 'MISMATCH';
+}
+
+// Per-row match: lot rows compare per-lot, non-lot rows compare per-site
+// waspBySkuLot: { "SKU|lot": qty }, waspBySkuSite: { "SKU|siteName": qty }
+function computeRowMatch_(row, katanaTotals, waspTotals, waspBySkuLot, waspBySkuSite, source) {
+  if (row.batch) {
+    // Per-lot matching
+    var lotKey = row.sku + '|' + row.batch;
+    var kQty = Math.round((parseFloat(row.qty) || 0) * 100) / 100;
+    var hasWasp = waspBySkuLot.hasOwnProperty(lotKey);
+    var wQty = Math.round((waspBySkuLot[lotKey] || 0) * 100) / 100;
+    if (!hasWasp) return 'KATANA ONLY';
+    if (kQty === 0 && wQty === 0) return 'ZERO';
+    if (Math.abs(kQty - wQty) < 0.01) return 'MATCH';
+    return 'MISMATCH';
+  }
+  // Non-lot: per-site comparison (Katana location = WASP site name)
+  if (row.location && waspBySkuSite) {
+    var siteKey = row.sku + '|' + row.location;
+    var rQty = Math.round((parseFloat(row.qty) || 0) * 100) / 100;
+    var hasSite = waspBySkuSite.hasOwnProperty(siteKey);
+    var sQty = Math.round((waspBySkuSite[siteKey] || 0) * 100) / 100;
+    if (!hasSite) {
+      // No WASP inventory at this site — check if SKU exists in WASP at all
+      if (source === 'KATANA' && !waspTotals.hasOwnProperty(row.sku)) return 'KATANA ONLY';
+      if (rQty === 0) return 'ZERO';  // both effectively 0 at this site
+      return 'MISMATCH';
+    }
+    if (rQty === 0 && sQty === 0) return 'ZERO';
+    if (Math.abs(rQty - sQty) < 0.01) return 'MATCH';
+    return 'MISMATCH';
+  }
+  // Fallback: SKU-total comparison
+  return computeCrossMatch_(row.sku, katanaTotals, waspTotals, source);
+}
+
+// -------------------------------------------------------
+// DELETE OLD TABS
+// -------------------------------------------------------
+
+function deleteOldTabs(ss) {
+  var oldTabNames = ['Dashboard', 'Wasp Updates', 'Sync', 'Katana Raw', 'Wasp Raw', 'Batch Detail'];
+  for (var i = 0; i < oldTabNames.length; i++) {
+    var sheet = ss.getSheetByName(oldTabNames[i]);
+    if (sheet) {
+      ss.deleteSheet(sheet);
+      Logger.log('Deleted old tab: ' + oldTabNames[i]);
+    }
+  }
+}
+
+// -------------------------------------------------------
+// KATANA TAB - 12 columns, WASP Status user-controlled
+// A SKU | B Name | C Location | D Type | E Lot Tracked | F Batch | G Expiry | H UOM | I Qty | J WASP Qty | K Match | L WASP Status
+// -------------------------------------------------------
+
+function writeKatanaTab(ss, katanaData, batchData, waspData) {
+  var sheet = ss.getSheetByName('Katana');
+  if (!sheet) {
+    sheet = ss.insertSheet('Katana');
+  }
+
+  // Build waspSkuSet for status detection
+  var waspSkuSet = {};
+  if (waspData && waspData.items) {
+    for (var ws = 0; ws < waspData.items.length; ws++) {
+      if (waspData.items[ws].itemNumber) waspSkuSet[waspData.items[ws].itemNumber] = true;
+    }
+  }
+
+  // Preserve Push status BEFORE clearing sheet
+  var NUM_COLS = 15;
+  var preserveMap = {};  // sku -> 'Push'
+  // Also preserve Adj Status pending rows
+  var adjPendingMap = {};  // key -> { qty, origQty }
+  if (sheet.getLastRow() > 1) {
+    var existingData = sheet.getRange(2, 1, sheet.getLastRow() - 1, NUM_COLS).getValues();
+    for (var ei = 0; ei < existingData.length; ei++) {
+      var eSku = String(existingData[ei][0]).trim();
+      var eStatus = String(existingData[ei][11]).trim().toUpperCase();
+      if (eSku && eStatus === 'PUSH') {
+        preserveMap[eSku] = 'Push';
+      }
+      var eAdjStatus = String(existingData[ei][13]).trim();
+      if (eSku && (eAdjStatus === 'Pending' || eAdjStatus === 'ERROR')) {
+        var eLoc = String(existingData[ei][2]).trim();
+        var eBatch = String(existingData[ei][5]).trim();
+        var adjKey = eSku + '|' + eLoc + '|' + eBatch;
+        adjPendingMap[adjKey] = {
+          qty: existingData[ei][9],       // user's edited WASP Qty
+          origQty: existingData[ei][12],   // orig qty
+          adjStatus: eAdjStatus
+        };
+      }
+    }
+  }
+
+  clearRawSheet(sheet);
+
+  var headers = ['SKU', 'Name', 'Location', 'Type', 'Lot Tracked', 'Batch', 'Expiry', 'UOM', 'K. Qty', 'WASP Qty', 'Match', 'WASP Status', 'Orig WASP Qty', 'Adj Status', 'K.Type'];
+  var colWidths = [130, 200, 140, 80, 80, 120, 95, 50, 80, 80, 90, 110, 1, 110, 1];
+  setupRawHeader(sheet, headers, colWidths);
+  sheet.getRange(1, 9).setBackground('#c7e933').setFontColor('#1a1a1a');  // K. Qty
+  sheet.getRange(1, 10).setBackground('#0c9aff').setFontColor('#ffffff'); // WASP Qty
+
+  if (!katanaData || !katanaData.items || katanaData.items.length === 0) {
+    Logger.log('Katana tab: no data');
+    return;
+  }
+
+  var lotTrackedSkus = (batchData && batchData.lotTrackedSkus) ? batchData.lotTrackedSkus : {};
+  var batchesBySku   = (batchData && batchData.batchesBySku)   ? batchData.batchesBySku   : {};
+
+  // Cross-match lookups: total qty per SKU
+  var katanaTotals = buildTotalBySku_(katanaData.items, 'sku', 'qtyInStock');
+  var waspTotals = {};
+  if (waspData && waspData.items) {
+    waspTotals = buildTotalBySku_(filterWaspItemsForTotals_(waspData.items), 'itemNumber', 'qtyAvailable');
+  }
+
+  // Per-lot lookup: SKU|lot -> total WASP qty across all locations
+  var waspBySkuLot = {};
+  if (waspData && waspData.items) {
+    for (var wl = 0; wl < waspData.items.length; wl++) {
+      var wItem = waspData.items[wl];
+      if (wItem.itemNumber && wItem.lot) {
+        var wlKey = wItem.itemNumber + '|' + wItem.lot;
+        if (!waspBySkuLot[wlKey]) waspBySkuLot[wlKey] = 0;
+        waspBySkuLot[wlKey] += (parseFloat(wItem.qtyAvailable) || 0);
+      }
+    }
+  }
+
+  // Per-site lookup: SKU|siteName -> total WASP qty at that site (for non-lot comparison)
+  var waspBySkuSite = {};
+  if (waspData && waspData.items) {
+    var filteredForSite = filterWaspItemsForTotals_(waspData.items);
+    for (var ws2 = 0; ws2 < filteredForSite.length; ws2++) {
+      var wsItem = filteredForSite[ws2];
+      if (wsItem.itemNumber) {
+        var wsKey = wsItem.itemNumber + '|' + (wsItem.siteName || 'MMH Kelowna');
+        if (!waspBySkuSite[wsKey]) waspBySkuSite[wsKey] = 0;
+        waspBySkuSite[wsKey] += (parseFloat(wsItem.qtyAvailable) || 0);
+      }
+    }
+  }
+
+  // Build rows
+  var rows = [];
+  var seenVariantLot = {};
+
+  for (var i = 0; i < katanaData.items.length; i++) {
+    var item = katanaData.items[i];
+    if (!item.sku || isSkippedSku(item.sku)) continue;
+
+    var isLotTracked = lotTrackedSkus[item.sku] ? true : false;
+    var batches = batchesBySku[item.sku] || [];
+
+    if (isLotTracked && batches.length > 0) {
+      for (var b = 0; b < batches.length; b++) {
+        var batch = batches[b];
+        var batchLoc = batch.location || item.locationName || '';
+        if (batchLoc !== item.locationName) continue;
+        var lotKey = item.sku + '|' + batchLoc + '|' + batch.batchNumber;
+        if (seenVariantLot[lotKey]) continue;
+        seenVariantLot[lotKey] = true;
+
+        rows.push({
+          sku: item.sku, name: item.name, location: batchLoc,
+          type: item.type || '', lotTracked: 'Yes',
+          batch: batch.batchNumber || '', expiry: safeDate(batch.expiry),
+          uom: item.uom || 'ea', qty: batch.qty,
+          category: item.category || ''
+        });
+      }
+    } else {
+      rows.push({
+        sku: item.sku, name: item.name, location: item.locationName || '',
+        type: item.type || '', lotTracked: isLotTracked ? 'Yes' : 'No',
+        batch: '', expiry: '',
+        uom: item.uom || 'ea', qty: item.qtyInStock,
+        category: item.category || ''
+      });
+    }
+  }
+
+  // Sort: Location -> SKU -> lot
+  rows.sort(function(a, b) {
+    var cmp = String(a.location).localeCompare(String(b.location));
+    if (cmp !== 0) return cmp;
+    return String(a.sku).localeCompare(String(b.sku));
+  });
+
+  // Build final rows with separators
+  var finalRows  = [];
+  var separators = [];
+  var prevLoc    = null;
+  var rowIdx     = 0;
+  var emptySep   = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
+
+  for (var r = 0; r < rows.length; r++) {
+    var row = rows[r];
+    var loc = row.location || '(No Location)';
+
+    if (loc !== prevLoc) {
+      var sepColor = getRawSeparatorColor(loc, KATANA_LOCATION_COLORS);
+      separators.push({ index: rowIdx, color: sepColor, label: loc });
+      finalRows.push(emptySep.slice());
+      rowIdx++;
+      prevLoc = loc;
+    }
+
+    var match = computeRowMatch_(row, katanaTotals, waspTotals, waspBySkuLot, waspBySkuSite, 'KATANA');
+
+    // WASP Qty: lot rows use per-lot lookup, non-lot rows use per-site lookup
+    var waspQty = '';
+    if (row.batch) {
+      var wLotKey = row.sku + '|' + row.batch;
+      waspQty = waspBySkuLot.hasOwnProperty(wLotKey) ? (Math.round((waspBySkuLot[wLotKey] || 0) * 100) / 100) : '';
+    } else if (row.location) {
+      var wSiteKey = row.sku + '|' + row.location;
+      waspQty = waspBySkuSite.hasOwnProperty(wSiteKey) ? (Math.round((waspBySkuSite[wSiteKey] || 0) * 100) / 100) : '';
+    } else if (waspTotals.hasOwnProperty(row.sku)) {
+      waspQty = Math.round((waspTotals[row.sku] || 0) * 100) / 100;
+    }
+
+    // Determine WASP Status
+    var waspStatus = '';
+    if (waspSkuSet[row.sku]) {
+      waspStatus = 'Synced';
+    } else if (preserveMap[row.sku]) {
+      waspStatus = preserveMap[row.sku];
+    } else {
+      // New item: auto-sync unless category is in skip list
+      var rowCat = String(row.category || '').toUpperCase().trim();
+      var skipAutoSync = false;
+      for (var sc = 0; sc < AUTO_SYNC_SKIP_CATEGORIES.length; sc++) {
+        if (rowCat === AUTO_SYNC_SKIP_CATEGORIES[sc]) { skipAutoSync = true; break; }
+      }
+      waspStatus = skipAutoSync ? 'NEW' : 'Push';
+    }
+
+    finalRows.push([
+      row.sku,        // A
+      row.name,       // B
+      row.location,   // C
+      row.category || '',       // D - visible category (PACKAGING, RAW MATER, etc.)
+      row.lotTracked, // E
+      row.batch,      // F
+      row.expiry,     // G
+      row.uom,        // H
+      row.qty,        // I
+      waspQty,        // J  - WASP Qty
+      match,          // K  - Match
+      waspStatus,     // L  - WASP Status
+      waspQty,        // M  - Orig WASP Qty (stores current WASP value)
+      '',             // N  - Adj Status
+      row.type || ''  // O  - K.Type (hidden, used by push engine for WASP location routing)
+    ]);
+    rowIdx++;
+  }
+
+  if (finalRows.length === 0) {
+    Logger.log('Katana tab: 0 rows after processing');
+    return;
+  }
+
+  sheet.getRange(2, 1, finalRows.length, NUM_COLS).setValues(finalRows);
+
+  // Number format on Qty column (I = col 9) and WASP Qty column (J = col 10)
+  sheet.getRange(2, 9, finalRows.length, 2).setNumberFormat('0.##');
+  sheet.getRange(2, 13, finalRows.length, 1).setNumberFormat('0.##');
+
+  // Hide Orig Qty column (col 13)
+  sheet.hideColumns(13, 1);
+
+  // Conditional formatting - Match (K=col 11), Lot Tracked (E=col 5), WASP Status (L=col 12)
+  var matchRange = sheet.getRange(2, 11, finalRows.length, 1);
+  var lotRange = sheet.getRange(2, 5, finalRows.length, 1);
+  var statusRange = sheet.getRange(2, 12, finalRows.length, 1);
+  var rules = [];
+  // Match column
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('MATCH')
+    .setBackground('#c8e6c9')
+    .setRanges([matchRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('MISMATCH')
+    .setBackground('#ffe0b2')
+    .setRanges([matchRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('KATANA ONLY')
+    .setBackground('#fff9c4')
+    .setRanges([matchRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('ZERO')
+    .setBackground('#f5f5f5')
+    .setRanges([matchRange]).build());
+  // Lot Tracked column
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('Yes')
+    .setBackground('#bbdefb')
+    .setRanges([lotRange]).build());
+  // WASP Status column
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextContains('Synced')
+    .setBackground('#c8e6c9')
+    .setRanges([statusRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('NEW')
+    .setBackground('#ffe0b2')
+    .setRanges([statusRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('Push')
+    .setBackground('#fff8e1')
+    .setRanges([statusRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('ERROR')
+    .setBackground('#ffcdd2')
+    .setRanges([statusRange]).build());
+  // Adj Status column
+  var adjStatusRange = sheet.getRange(2, 14, finalRows.length, 1);
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('Pending')
+    .setBackground('#fff8e1')
+    .setRanges([adjStatusRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextContains('Pushed')
+    .setBackground('#c8e6c9')
+    .setRanges([adjStatusRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('ERROR')
+    .setBackground('#ffcdd2')
+    .setRanges([adjStatusRange]).build());
+  sheet.setConditionalFormatRules(rules);
+
+  // Dropdown on WASP Status column (includes all valid statuses to avoid Invalid warning)
+  var statusDataRange = sheet.getRange(2, 12, finalRows.length, 1);
+  var pushDropdown = SpreadsheetApp.newDataValidation()
+    .requireValueInList(['Push', 'NEW', 'Synced', 'ERROR'], true)
+    .setAllowInvalid(true)
+    .build();
+  statusDataRange.setDataValidation(pushDropdown);
+
+  // Per-row formatting: separators + Push row highlights
+  for (var fi = 0; fi < finalRows.length; fi++) {
+    var sheetRow = fi + 2;
+    var sepEntry = null;
+    for (var s = 0; s < separators.length; s++) {
+      if (separators[s].index === fi) { sepEntry = separators[s]; break; }
+    }
+
+    if (sepEntry) {
+      sheet.getRange(sheetRow, 1).setValue(sepEntry.label);
+      sheet.getRange(sheetRow, 1, 1, NUM_COLS)
+        .setBackground(sepEntry.color)
+        .setFontColor('#ffffff')
+        .setFontWeight('bold')
+        .setFontSize(10);
+      sheet.getRange(sheetRow, 12).clearDataValidations();
+    } else {
+      // Highlight Push rows yellow
+      var rowStatus = String(finalRows[fi][11]).trim().toUpperCase();
+      if (rowStatus === 'PUSH') {
+        sheet.getRange(sheetRow, 1, 1, NUM_COLS).setBackground('#fff8e1');
+      }
+    }
+  }
+
+  // Restore adj pending rows after sync.
+  // Only Pending rows are preserved (user's edit still waiting to be pushed).
+  // ERROR rows are intentionally NOT restored — resync clears them and shows
+  // the real current WASP qty so the user can see the true state and retry.
+  var adjPendingCount = 0;
+  for (var api = 0; api < finalRows.length; api++) {
+    var apRow = finalRows[api];
+    var apSku = String(apRow[0]).trim();
+    if (!apSku || apSku.indexOf(' > ') > -1) continue;
+    var apLoc = String(apRow[2]).trim();
+    var apBatch = String(apRow[5]).trim();
+    var apKey = apSku + '|' + apLoc + '|' + apBatch;
+    if (adjPendingMap[apKey]) {
+      var ap = adjPendingMap[apKey];
+      if (ap.adjStatus === 'Pending') {
+        var apSheetRow = api + 2;
+        sheet.getRange(apSheetRow, 10).setValue(ap.qty);        // Restore edited WASP Qty
+        sheet.getRange(apSheetRow, 13).setValue(ap.origQty);    // Restore Orig WASP Qty
+        sheet.getRange(apSheetRow, 14).setValue(ap.adjStatus);  // Restore Adj Status
+        sheet.getRange(apSheetRow, 1, 1, NUM_COLS).setBackground('#fff8e1');
+        adjPendingCount++;
+      }
+      // ERROR rows: fall through — fresh WASP data already written above
+    }
+  }
+  if (adjPendingCount > 0) {
+    Logger.log('Katana tab: restored ' + adjPendingCount + ' pending rows (ERROR rows reset to fresh data)');
+  }
+
+  Logger.log('Katana tab: ' + rows.length + ' data rows + ' + separators.length + ' separators');
+}
+
+// -------------------------------------------------------
+// WASP TAB - 14 columns (12 visible + 2 hidden)
+// A SKU | B Name | C Site | D Location | E Lot Tracked | F Lot | G DateCode
+// H UOM | I Orig Qty | J Qty | K Orig Site | L Orig Location | M Match | N Status
+// -------------------------------------------------------
+
+function writeWaspTab(ss, waspData, katanaData, batchData) {
+  var sheet = ss.getSheetByName('Wasp');
+  if (!sheet) {
+    sheet = ss.insertSheet('Wasp');
+  }
+
+  // BEFORE clearing: read existing Status column to preserve pending rows
+  var NUM_COLS = 18;
+  var pendingMap = {};
+  if (sheet.getLastRow() > 1) {
+    var existingData = sheet.getRange(2, 1, sheet.getLastRow() - 1, NUM_COLS).getValues();
+    for (var ei = 0; ei < existingData.length; ei++) {
+      var eRow = existingData[ei];
+      var eStatus = String(eRow[15] || '').trim(); // col P = index 15 (Status)
+      if (eStatus === 'Pending') {
+        // Use orig site/location for key so it matches fresh data rows
+        var eOrigSite = String(eRow[12] || eRow[3]).trim(); // Orig Site = [12], fallback Site = [3]
+        var eOrigLoc = String(eRow[13] || eRow[4]).trim();  // Orig Loc = [13], fallback Loc = [4]
+        var eKey = eRow[0] + '|' + eOrigSite + '|' + eOrigLoc + '|' + eRow[6]; // SKU|OrigSite|OrigLoc|Lot
+        pendingMap[eKey] = {
+          qty: eRow[11],          // col L: user's edited W.Qty
+          status: eStatus,
+          origSite: eRow[12],     // col M: original site
+          origLocation: eRow[13], // col N: original location
+          newSite: eRow[3],       // col D: user's current site
+          newLocation: eRow[4],   // col E: user's current location
+          newLot: eRow[6],        // col G: user's current lot
+          newDateCode: eRow[7]    // col H: user's current dateCode
+        };
+      }
+    }
+  }
+
+  clearRawSheet(sheet);
+
+  var headers = ['SKU', 'Name', 'Type', 'Site', 'Location', 'Lot Tracked', 'Lot', 'DateCode',
+                 'UOM', 'K. Qty', 'Orig WASP Qty', 'W. Qty', 'Orig Site', 'Orig Location', 'Match', 'Status', 'Orig Lot', 'Orig DateCode'];
+  var colWidths = [130, 200, 130, 120, 130, 80, 120, 95, 50, 80, 1, 80, 1, 1, 90, 110, 1, 1];
+  setupRawHeader(sheet, headers, colWidths);
+  sheet.getRange(1, 10).setBackground('#c7e933').setFontColor('#1a1a1a'); // K. Qty
+  sheet.getRange(1, 12).setBackground('#0c9aff').setFontColor('#ffffff'); // W. Qty
+
+  if (!waspData || !waspData.items || waspData.items.length === 0) {
+    Logger.log('Wasp tab: no data');
+    return;
+  }
+
+  var lotTrackedSkus = (batchData && batchData.lotTrackedSkus) ? batchData.lotTrackedSkus : {};
+
+  // Cross-match lookups
+  var waspTotals = buildTotalBySku_(filterWaspItemsForTotals_(waspData.items), 'itemNumber', 'qtyAvailable');
+  var katanaTotals = {};
+  if (katanaData && katanaData.items) {
+    katanaTotals = buildTotalBySku_(katanaData.items, 'sku', 'qtyInStock');
+  }
+
+  // Per-lot lookup from Katana batches: SKU|lot -> total Katana qty
+  var katanaBySkuLot = {};
+  var batchesBySku = (batchData && batchData.batchesBySku) ? batchData.batchesBySku : {};
+  var bSkuKeys = Object.keys(batchesBySku);
+  for (var bsi = 0; bsi < bSkuKeys.length; bsi++) {
+    var bSku = bSkuKeys[bsi];
+    var bList = batchesBySku[bSku];
+    for (var bli = 0; bli < bList.length; bli++) {
+      if (bList[bli].batchNumber) {
+        var kLotKey = bSku + '|' + bList[bli].batchNumber;
+        if (!katanaBySkuLot[kLotKey]) katanaBySkuLot[kLotKey] = 0;
+        katanaBySkuLot[kLotKey] += (parseFloat(bList[bli].qty) || 0);
+      }
+    }
+  }
+
+  // Per-site lookup from Katana: SKU|locationName -> total Katana qty at that site
+  var katanaBySkuSite = {};
+  if (katanaData && katanaData.items) {
+    for (var ks = 0; ks < katanaData.items.length; ks++) {
+      var kSItem = katanaData.items[ks];
+      if (kSItem.sku && !isSkippedSku(kSItem.sku) && kSItem.locationName) {
+        var kSiteKey = kSItem.sku + '|' + kSItem.locationName;
+        if (!katanaBySkuSite[kSiteKey]) katanaBySkuSite[kSiteKey] = 0;
+        katanaBySkuSite[kSiteKey] += (parseFloat(kSItem.qtyInStock) || 0);
+      }
+    }
+  }
+
+  // Pre-build set of SKUs that have actual lot-level rows in WASP data
+  var skusWithLotRows = {};
+  for (var li = 0; li < waspData.items.length; li++) {
+    if (waspData.items[li].itemNumber && waspData.items[li].lot) {
+      skusWithLotRows[waspData.items[li].itemNumber] = true;
+    }
+  }
+
+  // Build Katana category lookup by SKU (for Type column)
+  var katanaCatBySku = {};
+  if (katanaData && katanaData.items) {
+    for (var kci = 0; kci < katanaData.items.length; kci++) {
+      var kcItem = katanaData.items[kci];
+      if (kcItem.sku && kcItem.category && !katanaCatBySku[kcItem.sku]) {
+        katanaCatBySku[kcItem.sku] = kcItem.category;
+      }
+    }
+  }
+
+  var rows = [];
+
+  for (var i = 0; i < waspData.items.length; i++) {
+    var item = waspData.items[i];
+    if (!item.itemNumber) continue;
+    if (isSkippedSku(item.itemNumber)) continue;
+
+    var isLotTracked = false;
+    if (item.lotTracking !== undefined && item.lotTracking !== null) {
+      isLotTracked = item.lotTracking ? true : false;
+    } else {
+      isLotTracked = lotTrackedSkus[item.itemNumber] ? true : false;
+    }
+    var lotVal = item.lot || '';
+    // Skip aggregate rows for lot-tracked items ONLY if per-lot rows exist
+    // Keep items that are lot-tracked but have no lot inventory yet
+    if (isLotTracked && !lotVal && skusWithLotRows[item.itemNumber]) continue;
+
+    var siteVal = item.siteName || 'MMH Kelowna';
+    if (siteVal === '(unknown)' || siteVal === 'unknown') siteVal = 'MMH Kelowna';
+
+    rows.push({
+      sku: item.itemNumber, name: item.description || '',
+      site: siteVal, location: item.locationCode || 'UNSORTED',
+      type: katanaCatBySku[item.itemNumber] || '',
+      lotTracked: isLotTracked ? 'Yes' : 'No', lot: lotVal,
+      dateCode: safeDate(item.dateCode), uom: item.uom || 'ea',
+      qty: item.qtyAvailable
+    });
+  }
+
+  // Sort: Site -> Location -> SKU -> Lot
+  rows.sort(function(a, b) {
+    var cmp = String(a.site).localeCompare(String(b.site));
+    if (cmp !== 0) return cmp;
+    cmp = String(a.location).localeCompare(String(b.location));
+    if (cmp !== 0) return cmp;
+    cmp = String(a.sku).localeCompare(String(b.sku));
+    if (cmp !== 0) return cmp;
+    return String(a.lot).localeCompare(String(b.lot));
+  });
+
+  // Group rows by site|location for ordered rendering
+  var rowsByLoc = {};
+  var siteLocCounts = {};
+  for (var ci = 0; ci < rows.length; ci++) {
+    var cRow = rows[ci];
+    var slKey = cRow.site + '|' + cRow.location;
+    if (!rowsByLoc[slKey]) rowsByLoc[slKey] = [];
+    rowsByLoc[slKey].push(cRow);
+    if (!siteLocCounts[slKey]) siteLocCounts[slKey] = { items: 0, units: 0 };
+    siteLocCounts[slKey].items++;
+    siteLocCounts[slKey].units += cRow.qty;
+  }
+
+  // Build ordered location list: all defined locations, then any unlisted WASP locations appended
+  var allWaspLocs = buildAllWaspLocations_();
+  var seenLocKeys = {};
+  for (var ali = 0; ali < allWaspLocs.length; ali++) {
+    seenLocKeys[allWaspLocs[ali].site + '|' + allWaspLocs[ali].location] = true;
+  }
+  var rkKeys = Object.keys(rowsByLoc);
+  for (var rki = 0; rki < rkKeys.length; rki++) {
+    if (!seenLocKeys[rkKeys[rki]]) {
+      var rkParts = rkKeys[rki].split('|');
+      allWaspLocs.push({ site: rkParts[0], location: rkParts.slice(1).join('|') });
+    }
+  }
+
+  // Build final rows — one separator per location (always, even if 0 items)
+  var finalRows   = [];
+  var separators  = [];
+  var rowIdx      = 0;
+  var emptySep    = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
+
+  for (var li = 0; li < allWaspLocs.length; li++) {
+    var locSite   = allWaspLocs[li].site;
+    var locCode   = allWaspLocs[li].location;
+    var locKey    = locSite + '|' + locCode;
+    var locCounts = siteLocCounts[locKey] || { items: 0, units: 0 };
+    var sepLabel  = locSite + ' > ' + locCode + ' (' + locCounts.items + ' items, ' +
+      Math.round(locCounts.units).toLocaleString() + ' units)';
+    var sepColor  = getWaspLocColor_(locSite, locCode);
+    separators.push({ index: rowIdx, color: sepColor, label: sepLabel });
+    finalRows.push(emptySep.slice());
+    rowIdx++;
+
+    var locRows = rowsByLoc[locKey] || [];
+    for (var r = 0; r < locRows.length; r++) {
+      var row = locRows[r];
+
+      // Per-lot matching for lot rows, per-site for non-lot rows
+      var match;
+      if (row.lot) {
+        var wLotKey2 = row.sku + '|' + row.lot;
+        var wLotQty = Math.round((parseFloat(row.qty) || 0) * 100) / 100;
+        var hasKatana = katanaBySkuLot.hasOwnProperty(wLotKey2);
+        var kLotQty = Math.round((katanaBySkuLot[wLotKey2] || 0) * 100) / 100;
+        if (!hasKatana) match = 'WASP ONLY';
+        else if (wLotQty === 0 && kLotQty === 0) match = 'ZERO';
+        else if (Math.abs(kLotQty - wLotQty) < 0.01) match = 'MATCH';
+        else match = 'MISMATCH';
+      } else if (row.site && katanaBySkuSite) {
+        // Per-site: WASP site name = Katana location name
+        var wSiteKey2 = row.sku + '|' + row.site;
+        var wSiteQty = Math.round((parseFloat(row.qty) || 0) * 100) / 100;
+        var hasKSite = katanaBySkuSite.hasOwnProperty(wSiteKey2);
+        var kSiteQty = Math.round((katanaBySkuSite[wSiteKey2] || 0) * 100) / 100;
+        if (!hasKSite) {
+          // No Katana inventory at this site — check if SKU exists in Katana at all
+          if (!katanaTotals.hasOwnProperty(row.sku)) match = 'WASP ONLY';
+          else if (wSiteQty === 0) match = 'ZERO';
+          else match = 'MISMATCH';
+        }
+        else if (wSiteQty === 0 && kSiteQty === 0) match = 'ZERO';
+        else if (Math.abs(kSiteQty - wSiteQty) < 0.01) match = 'MATCH';
+        else match = 'MISMATCH';
+      } else {
+        match = computeCrossMatch_(row.sku, katanaTotals, waspTotals, 'WASP');
+      }
+
+      finalRows.push([
+        row.sku,        // A [0]
+        row.name,       // B [1]
+        row.type,       // C [2] - Type (Katana category)
+        row.site,       // D [3]
+        row.location,   // E [4]
+        row.lotTracked, // F [5] - Lot Tracked (read-only, from WASP)
+        row.lot,        // G [6]
+        row.dateCode,   // H [7]
+        row.uom,        // I [8]
+        row.lot ? (katanaBySkuLot[row.sku + '|' + row.lot] || 0) : (katanaBySkuSite[row.sku + '|' + row.site] || 0), // J [9]  K. Qty
+        row.qty,        // K [10] Orig WASP Qty (hidden baseline)
+        row.qty,        // L [11] W. Qty (editable)
+        row.site,       // M [12] Orig Site (hidden)
+        row.location,   // N [13] Orig Location (hidden)
+        match,          // O [14] Match
+        '',             // P [15] Status
+        row.lot,        // Q [16] Orig Lot (hidden)
+        row.dateCode    // R [17] Orig DateCode (hidden)
+      ]);
+      rowIdx++;
+    }
+  }
+
+  sheet.getRange(2, 1, finalRows.length, NUM_COLS).setValues(finalRows);
+
+  // Restore pending rows
+  var pendingCount = 0;
+  for (var pi = 0; pi < finalRows.length; pi++) {
+    var pRow = finalRows[pi];
+    var pKey = pRow[0] + '|' + pRow[3] + '|' + pRow[4] + '|' + pRow[6]; // SKU|Site|Location|Lot
+    if (pendingMap[pKey]) {
+      var sheetRow = pi + 2;
+      var pm = pendingMap[pKey];
+      sheet.getRange(sheetRow, 12).setValue(pm.qty); // W.Qty col L
+      sheet.getRange(sheetRow, 16).setValue('Pending'); // Status col P
+      // Restore user-edited Site/Location/Lot/DateCode if different from fresh data
+      if (pm.newSite && String(pm.newSite).trim() !== String(pRow[3]).trim()) {
+        sheet.getRange(sheetRow, 4).setValue(pm.newSite);
+      }
+      if (pm.newLocation && String(pm.newLocation).trim() !== String(pRow[4]).trim()) {
+        sheet.getRange(sheetRow, 5).setValue(pm.newLocation);
+      }
+      if (pm.newLot && String(pm.newLot).trim() !== String(pRow[6]).trim()) {
+        sheet.getRange(sheetRow, 7).setValue(pm.newLot);
+      }
+      if (pm.newDateCode && String(pm.newDateCode).trim() !== String(pRow[7]).trim()) {
+        sheet.getRange(sheetRow, 8).setValue(pm.newDateCode);
+      }
+      sheet.getRange(sheetRow, 1, 1, NUM_COLS).setBackground('#fff9c4'); // yellow highlight
+      pendingCount++;
+    }
+  }
+  if (pendingCount > 0) {
+    Logger.log('Wasp tab: restored ' + pendingCount + ' pending rows');
+  }
+
+  // Hide columns K, M, N (11, 13, 14) and Q, R (17, 18)
+  // K=Orig WASP Qty (hidden baseline), M=Orig Site, N=Orig Location, Q=Orig Lot, R=Orig DateCode
+  sheet.hideColumns(11, 1);
+  sheet.hideColumns(13, 2);
+  sheet.hideColumns(17, 2);
+
+  // Number format on K. Qty (J=10) and W. Qty (L=12)
+  sheet.getRange(2, 10, finalRows.length, 1).setNumberFormat('0.##');
+  sheet.getRange(2, 12, finalRows.length, 1).setNumberFormat('0.##');
+
+  // K. Qty column (J=10): grey/read-only styling
+  sheet.getRange(2, 10, finalRows.length, 1).setBackground('#f5f5f5').setFontColor('#757575');
+
+  // Conditional formatting - Match (O=15), Status (P=16), Lot Tracked (F=6)
+  var matchRange = sheet.getRange(2, 15, finalRows.length, 1);
+  var statusRange = sheet.getRange(2, 16, finalRows.length, 1);
+  var lotRange = sheet.getRange(2, 6, finalRows.length, 1);
+  var rules = [];
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('MATCH')
+    .setBackground('#c8e6c9')
+    .setRanges([matchRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('MISMATCH')
+    .setBackground('#ffe0b2')
+    .setRanges([matchRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('WASP ONLY')
+    .setBackground('#fff9c4')
+    .setRanges([matchRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('ZERO')
+    .setBackground('#f5f5f5')
+    .setRanges([matchRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('Pending')
+    .setBackground('#ffe0b2')
+    .setRanges([statusRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextContains('Synced')
+    .setBackground('#c8e6c9')
+    .setRanges([statusRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('ERROR')
+    .setBackground('#ffcdd2')
+    .setRanges([statusRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('Yes')
+    .setBackground('#bbdefb')
+    .setRanges([lotRange]).build());
+  var lotValueRange = sheet.getRange(2, 7, finalRows.length, 1);
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('NO-LOT')
+    .setBackground('#fff3e0')
+    .setFontColor('#e65100')
+    .setRanges([lotValueRange]).build());
+  sheet.setConditionalFormatRules(rules);
+
+  // Per-row formatting: separators
+  for (var fi = 0; fi < finalRows.length; fi++) {
+    var sheetRow = fi + 2;
+    var sepEntry = null;
+    for (var s = 0; s < separators.length; s++) {
+      if (separators[s].index === fi) { sepEntry = separators[s]; break; }
+    }
+
+    if (sepEntry) {
+      sheet.getRange(sheetRow, 1).setValue(sepEntry.label);
+      sheet.getRange(sheetRow, 1, 1, NUM_COLS)
+        .setBackground(sepEntry.color)
+        .setFontColor('#ffffff')
+        .setFontWeight('bold')
+        .setFontSize(10);
+    }
+  }
+
+  // Save manifest for deleted-row detection during push
+  saveWaspManifest_(rows);
+
+  Logger.log('Wasp tab: ' + rows.length + ' data rows, ' + allWaspLocs.length + ' locations shown');
+}
+
+// -------------------------------------------------------
+// WASP MANIFEST - tracks rows for deleted-row detection
+// -------------------------------------------------------
+
+/**
+ * Saves a compact manifest of all WASP rows to ScriptProperties.
+ * Used by pushToWasp() to detect rows the user deleted from the sheet.
+ * Chunked into 8KB properties to handle the 9KB per-property limit.
+ *
+ * @param {Array} rows - Array of row objects from writeWaspTab
+ */
+function saveWaspManifest_(rows) {
+  var manifest = {};
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i];
+    if (!r.sku) continue;
+    var key = r.sku + '|' + r.site + '|' + r.location + '|' + r.lot;
+    manifest[key] = {
+      q: r.qty,
+      n: r.name,
+      lt: r.lotTracked === 'Yes',
+      dc: r.dateCode || '',
+      u: r.uom || 'ea'
+    };
+  }
+
+  var json = JSON.stringify(manifest);
+  var props = PropertiesService.getScriptProperties();
+
+  // Clear old chunks
+  var oldCount = parseInt(props.getProperty('WASP_MANIFEST_COUNT') || '0', 10);
+  for (var ci = 0; ci < oldCount; ci++) {
+    props.deleteProperty('WASP_MANIFEST_' + ci);
+  }
+
+  // Store in chunks of 8000 chars
+  var CHUNK_SIZE = 8000;
+  var chunks = Math.ceil(json.length / CHUNK_SIZE);
+  for (var c = 0; c < chunks; c++) {
+    props.setProperty('WASP_MANIFEST_' + c, json.substring(c * CHUNK_SIZE, (c + 1) * CHUNK_SIZE));
+  }
+  props.setProperty('WASP_MANIFEST_COUNT', String(chunks));
+  Logger.log('Wasp manifest saved: ' + Object.keys(manifest).length + ' entries, ' + chunks + ' chunks');
+}
+
+/**
+ * Loads the WASP manifest from ScriptProperties.
+ * @returns {Object} manifest keyed by "SKU|site|location|lot"
+ */
+function loadWaspManifest_() {
+  var props = PropertiesService.getScriptProperties();
+  var count = parseInt(props.getProperty('WASP_MANIFEST_COUNT') || '0', 10);
+  if (count === 0) return {};
+
+  var json = '';
+  for (var c = 0; c < count; c++) {
+    json += (props.getProperty('WASP_MANIFEST_' + c) || '');
+  }
+
+  try { return JSON.parse(json); }
+  catch (e) {
+    Logger.log('Failed to parse manifest: ' + e.message);
+    return {};
+  }
+}
+
+// -------------------------------------------------------
+// BATCH TAB - 14 columns, lot-tracked only
+// SKU | K.Location | K.Qty | K.UOM | K.Batch | K.Expiry | W.Site | W.Location | W.Qty | W.UOM | W.Lot | W.DateCode | Diff | Status
+// -------------------------------------------------------
+
+function writeBatchTab(ss, katanaData, waspData, batchData) {
+  var sheet = ss.getSheetByName('Batch');
+  if (!sheet) {
+    sheet = ss.insertSheet('Batch');
+  }
+
+  // BEFORE clearing: read existing data to preserve pending rows
+  var pendingMap = {};
+  if (sheet.getLastRow() > 1) {
+    var existingData = sheet.getRange(2, 1, sheet.getLastRow() - 1, 20).getValues();
+    for (var ei = 0; ei < existingData.length; ei++) {
+      var eRow = existingData[ei];
+      var eSyncStatus = String(eRow[17] || '').trim(); // col 18 = index 17
+      if (eSyncStatus === 'Pending') {
+        var eSku = String(eRow[0]).trim();
+        var eLot = String(eRow[10]).trim();
+        var eSite = String(eRow[6]).trim();
+        var eLoc = String(eRow[7]).trim();
+        var eKey = eSku + '|' + eLot + '|' + eSite + '|' + eLoc;
+        pendingMap[eKey] = {
+          qty: eRow[8],               // W.Qty (col 9, idx 8)
+          syncStatus: eSyncStatus,
+          origQty: eRow[14],          // Orig W.Qty (col 15, idx 14)
+          origSite: eRow[15],         // Orig W.Site (col 16, idx 15)
+          origLocation: eRow[16],     // Orig W.Location (col 17, idx 16)
+          newSite: eRow[6],           // W.Site (col 7, idx 6)
+          newLocation: eRow[7],       // W.Location (col 8, idx 7)
+          newLot: eRow[10],           // W.Lot (col 11, idx 10)
+          newDateCode: eRow[11]       // W.DateCode (col 12, idx 11)
+        };
+      }
+    }
+  }
+
+  // White slate: clear content and all formatting on data range before writing
+  var maxRows = sheet.getMaxRows();
+  if (maxRows > 1) {
+    sheet.getRange(2, 1, maxRows - 1, 20).clearContent().clearFormat();
+  }
+
+  // Clear old validations and extra columns
+  sheet.getRange(1, 1, maxRows, sheet.getMaxColumns()).clearDataValidations();
+  var lastCol = sheet.getLastColumn();
+  if (lastCol > 20) {
+    sheet.getRange(1, 21, maxRows, lastCol - 20).clearContent().clearFormat();
+  }
+
+  // Headers
+  var headers = ['SKU', 'K.Location', 'K.Qty', 'K.UOM', 'K.Batch', 'K.Expiry',
+                 'W.Site', 'W.Location', 'W.Qty', 'W.UOM', 'W.Lot', 'W.DateCode', 'Diff', 'Status',
+                 'Orig W.Qty', 'Orig W.Site', 'Orig W.Location', 'Sync Status', 'Orig W.Lot', 'Orig W.DateCode'];
+  sheet.getRange(1, 1, 1, 20).setValues([headers]);
+
+  // Header colors: grey SKU, lime Katana, blue Wasp, dark Result, dark for new hidden+status cols
+  var hBg = [['#424242', '#c7e933', '#c7e933', '#c7e933', '#c7e933', '#c7e933',
+              '#0c9aff', '#0c9aff', '#0c9aff', '#0c9aff', '#0c9aff', '#0c9aff',
+              '#263238', '#263238', '#263238', '#263238', '#263238', '#263238', '#263238', '#263238']];
+  var hFc = [['#ffffff', '#000000', '#000000', '#000000', '#000000', '#000000',
+              '#ffffff', '#ffffff', '#ffffff', '#ffffff', '#ffffff', '#ffffff',
+              '#ffffff', '#ffffff', '#ffffff', '#ffffff', '#ffffff', '#ffffff', '#ffffff', '#ffffff']];
+  sheet.getRange(1, 1, 1, 20).setBackgrounds(hBg).setFontColors(hFc).setFontWeight('bold');
+  sheet.setFrozenRows(1);
+
+  // Column widths
+  sheet.setColumnWidth(1, 130);
+  sheet.setColumnWidth(2, 140);
+  sheet.setColumnWidth(3, 80);
+  sheet.setColumnWidth(4, 45);
+  sheet.setColumnWidth(5, 120);
+  sheet.setColumnWidth(6, 95);
+  sheet.setColumnWidth(7, 140);
+  sheet.setColumnWidth(8, 130);
+  sheet.setColumnWidth(9, 80);
+  sheet.setColumnWidth(10, 45);
+  sheet.setColumnWidth(11, 120);
+  sheet.setColumnWidth(12, 95);
+  sheet.setColumnWidth(13, 70);
+  sheet.setColumnWidth(14, 110);
+  sheet.setColumnWidth(15, 1);   // Orig W.Qty (hidden)
+  sheet.setColumnWidth(16, 1);   // Orig W.Site (hidden)
+  sheet.setColumnWidth(17, 1);   // Orig W.Location (hidden)
+  sheet.setColumnWidth(18, 110); // Sync Status
+  sheet.setColumnWidth(19, 1);   // Orig W.Lot (hidden)
+  sheet.setColumnWidth(20, 1);   // Orig W.DateCode (hidden)
+
+  // Thin light grey border between Katana (cols 1-6) and WASP (cols 7-12) sections
+  sheet.getRange(1, 6, maxRows, 1).setBorder(null, null, null, true, null, null,
+    '#bdbdbd', SpreadsheetApp.BorderStyle.SOLID);
+
+  // Conditional formatting: Status (col 14), Diff (col 13), and Sync Status (col 18)
+  var statusRange = sheet.getRange(2, 14, 998, 1);
+  var diffRange = sheet.getRange(2, 13, 998, 1);
+  var syncStatusRange = sheet.getRange(2, 18, 998, 1);
+  var rules = [];
+  rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('MATCH').setBackground('#c8e6c9').setRanges([statusRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('MISMATCH').setBackground('#ffcdd2').setRanges([statusRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('KATANA ONLY').setBackground('#ffe0b2').setRanges([statusRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('WASP ONLY').setBackground('#fff9c4').setRanges([statusRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('NO DATA').setBackground('#e0e0e0').setRanges([statusRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('TOTAL MATCH').setBackground('#a5d6a7').setRanges([statusRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('TOTAL MISMATCH').setBackground('#ef9a9a').setRanges([statusRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThan(0).setBackground('#c8e6c9').setFontColor('#2e7d32').setRanges([diffRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(0).setBackground('#ffcdd2').setFontColor('#c62828').setRanges([diffRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('Pending').setBackground('#ffe0b2').setRanges([syncStatusRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextContains('Synced').setBackground('#c8e6c9').setRanges([syncStatusRange]).build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('ERROR').setBackground('#ffcdd2').setRanges([syncStatusRange]).build());
+  sheet.setConditionalFormatRules(rules);
+
+  var lotTrackedSkus = batchData.lotTrackedSkus;
+
+  // Build Wasp UOM map: sku -> uom
+  var waspUomBySku = {};
+  for (var wu = 0; wu < waspData.items.length; wu++) {
+    var wuItem = waspData.items[wu];
+    if (wuItem.itemNumber && wuItem.uom && !waspUomBySku[wuItem.itemNumber]) {
+      waspUomBySku[wuItem.itemNumber] = wuItem.uom;
+    }
+  }
+
+  // Build Wasp aggregate per SKU (for total comparison when lot names don't match)
+  var waspAggBySku = {};
+  var waspHasLotBySku = {};
+  for (var wa1 = 0; wa1 < waspData.items.length; wa1++) {
+    var wa1Item = waspData.items[wa1];
+    if (wa1Item.itemNumber && wa1Item.lot) waspHasLotBySku[wa1Item.itemNumber] = true;
+  }
+  for (var wa2 = 0; wa2 < waspData.items.length; wa2++) {
+    var wAgg = waspData.items[wa2];
+    if (!wAgg.itemNumber || isSkippedSku(wAgg.itemNumber)) continue;
+    if (waspHasLotBySku[wAgg.itemNumber] && !wAgg.lot) continue;
+    if (!waspAggBySku[wAgg.itemNumber]) waspAggBySku[wAgg.itemNumber] = 0;
+    waspAggBySku[wAgg.itemNumber] += wAgg.qtyAvailable;
+  }
+
+  // Build Wasp lot list per SKU - include items with empty lot if SKU is lot-tracked in Katana
+  var waspLotBySku = {};
+  for (var wi = 0; wi < waspData.items.length; wi++) {
+    var w = waspData.items[wi];
+    if (!w.itemNumber || !lotTrackedSkus[w.itemNumber]) continue;
+    if (!w.lot && !lotTrackedSkus[w.itemNumber]) continue;
+    if (!waspLotBySku[w.itemNumber]) waspLotBySku[w.itemNumber] = [];
+    var dc = w.dateCode || '';
+    if (dc && String(dc).indexOf('T') > -1) dc = String(dc).split('T')[0];
+    waspLotBySku[w.itemNumber].push({
+      lot: w.lot || '', qty: w.qtyAvailable, dateCode: dc,
+      site: w.siteName || '', location: w.locationCode || ''
+    });
+  }
+
+  // Collect lot-tracked SKUs from both sources
+  var allSkus = {};
+  for (var ki2 = 0; ki2 < katanaData.items.length; ki2++) {
+    var k2 = katanaData.items[ki2];
+    if (k2.sku && !isSkippedSku(k2.sku) && lotTrackedSkus[k2.sku]) allSkus[k2.sku] = true;
+  }
+  for (var wi2 = 0; wi2 < waspData.items.length; wi2++) {
+    var w2 = waspData.items[wi2];
+    if (w2.itemNumber && !isSkippedSku(w2.itemNumber) && lotTrackedSkus[w2.itemNumber]) allSkus[w2.itemNumber] = true;
+  }
+
+  var rows = [];
+  var totalRows = [];
+  var sortedSkus = Object.keys(allSkus).sort();
+
+  for (var si = 0; si < sortedSkus.length; si++) {
+    var sku = sortedSkus[si];
+    var kBatches = batchData.batchesBySku[sku] || [];
+    var wEntries = waspLotBySku[sku] || [];
+    var usedWasp = [];
+
+    var kUom = kBatches.length > 0 ? (kBatches[0].uom || 'ea') : 'ea';
+    var wUom = waspUomBySku[sku] || '';
+
+    // Katana batches - try to match each to a Wasp entry by lot name
+    for (var kb = 0; kb < kBatches.length; kb++) {
+      var batch = kBatches[kb];
+      var bn = batch.batchNumber;
+      var wMatch = null;
+      var wMatchIdx = -1;
+      for (var we = 0; we < wEntries.length; we++) {
+        if (usedWasp.indexOf(we) > -1) continue;
+        if (wEntries[we].lot === bn) { wMatch = wEntries[we]; wMatchIdx = we; break; }
+      }
+
+      var wQty = wMatch ? wMatch.qty : 0;
+      var diff = Math.round((batch.qty - wQty) * 100) / 100;
+      var status;
+      if (!wMatch) status = 'KATANA ONLY';
+      else if (Math.abs(diff) < 0.01) status = 'MATCH';
+      else status = 'MISMATCH';
+
+      rows.push([
+        sku, batch.location || '', batch.qty, kUom, bn, batch.expiry || '',
+        wMatch ? wMatch.site : '', wMatch ? wMatch.location : '',
+        wQty, wUom, wMatch ? wMatch.lot : '', wMatch ? wMatch.dateCode : '',
+        diff, status,
+        wQty,                          // Orig W.Qty
+        wMatch ? wMatch.site : '',     // Orig W.Site
+        wMatch ? wMatch.location : '', // Orig W.Location
+        '',                            // Sync Status
+        wMatch ? wMatch.lot : '',      // Orig W.Lot
+        wMatch ? wMatch.dateCode : ''  // Orig W.DateCode
+      ]);
+      if (wMatchIdx > -1) usedWasp.push(wMatchIdx);
+    }
+
+    // Wasp-only entries (each location stays separate, including no-lot entries)
+    for (var wl = 0; wl < wEntries.length; wl++) {
+      if (usedWasp.indexOf(wl) > -1) continue;
+      var wE = wEntries[wl];
+      rows.push([
+        sku, '', 0, '', '', '',
+        wE.site, wE.location,
+        wE.qty, wUom, wE.lot, wE.dateCode || '',
+        -wE.qty, 'WASP ONLY',
+        wE.qty, wE.site, wE.location, '',
+        wE.lot,              // Orig W.Lot
+        wE.dateCode || ''    // Orig W.DateCode
+      ]);
+    }
+
+    if (kBatches.length === 0 && wEntries.length === 0) {
+      rows.push([sku, '', 0, '', '', '', '', '', 0, '', '', '', 0, 'NO DATA', 0, '', '', '', '', '']);
+    }
+
+    // Total comparison when lot names don't match but Wasp has data
+    var skuHasGap = false;
+    for (var rc = rows.length - 1; rc >= 0 && rows[rc][0] === sku; rc--) {
+      var rowSt = rows[rc][13];
+      if (rowSt === 'KATANA ONLY' || rowSt === 'WASP ONLY') { skuHasGap = true; break; }
+    }
+    var wAggQty = waspAggBySku[sku] || 0;
+    if (skuHasGap && kBatches.length > 0 && wAggQty > 0) {
+      var kTotal = 0;
+      for (var kt = 0; kt < kBatches.length; kt++) kTotal += kBatches[kt].qty;
+      kTotal = Math.round(kTotal * 100) / 100;
+      var wTotalComp = Math.round(wAggQty * 100) / 100;
+      var totalDiff = Math.round((kTotal - wTotalComp) * 100) / 100;
+      var totalStatus = Math.abs(totalDiff) < 0.01 ? 'TOTAL MATCH' : 'TOTAL MISMATCH';
+      totalRows.push([sku, '', kTotal, kUom, '', '', '', '', wTotalComp, wUom, '(no lot data)', '', totalDiff, totalStatus, 0, '', '', '', '', '']);
+    }
+  }
+
+  // Sort: W.Site (col 6) -> W.Location (col 7) -> SKU (col 0) -> K.Batch (col 4)
+  rows.sort(function(a, b) {
+    var cmp = String(a[6] || '').localeCompare(String(b[6] || ''));
+    if (cmp !== 0) return cmp;
+    cmp = String(a[7] || '').localeCompare(String(b[7] || ''));
+    if (cmp !== 0) return cmp;
+    cmp = String(a[0]).localeCompare(String(b[0]));
+    if (cmp !== 0) return cmp;
+    return String(a[4]).localeCompare(String(b[4]));
+  });
+
+  // Group rows by W.Site|W.Location
+  var batchRowsByLoc = {};
+  var batchLocCounts = {};
+  for (var ri = 0; ri < rows.length; ri++) {
+    var bSite = String(rows[ri][6] || '').trim();
+    var bLoc  = String(rows[ri][7] || '').trim();
+    var bKey  = bSite + '|' + bLoc;
+    if (!batchRowsByLoc[bKey]) batchRowsByLoc[bKey] = [];
+    batchRowsByLoc[bKey].push(rows[ri]);
+    if (!batchLocCounts[bKey]) batchLocCounts[bKey] = 0;
+    batchLocCounts[bKey]++;
+  }
+
+  // Build ordered location list (all defined WASP locations) + any unlisted appended
+  var allBatchLocs = buildAllWaspLocations_();
+  var seenBatchKeys = {};
+  for (var bali = 0; bali < allBatchLocs.length; bali++) {
+    seenBatchKeys[allBatchLocs[bali].site + '|' + allBatchLocs[bali].location] = true;
+  }
+  var brkKeys = Object.keys(batchRowsByLoc);
+  for (var brki = 0; brki < brkKeys.length; brki++) {
+    if (!seenBatchKeys[brkKeys[brki]]) {
+      var brkParts = brkKeys[brki].split('|');
+      var brkSite = brkParts[0];
+      // Skip unknown/empty site buckets — no useful location data
+      if (!brkSite || brkSite.toLowerCase().indexOf('unknown') > -1) continue;
+      allBatchLocs.push({ site: brkSite, location: brkParts.slice(1).join('|') });
+    }
+  }
+
+  // Build final rows — one separator per location (always, even if 0 batches)
+  var finalRows = [];
+  var separatorMeta = []; // { idx, color }
+  var bEmptySep = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
+
+  for (var bli = 0; bli < allBatchLocs.length; bli++) {
+    var blSite  = allBatchLocs[bli].site;
+    var blCode  = allBatchLocs[bli].location;
+    var blKey   = blSite + '|' + blCode;
+    var blCount = batchLocCounts[blKey] || 0;
+    var blLabel = blSite + ' > ' + blCode + ' (' + blCount + ' batches)';
+    var blColor = getWaspLocColor_(blSite, blCode);
+    separatorMeta.push({ idx: finalRows.length, color: blColor });
+    var bSepRow = bEmptySep.slice();
+    bSepRow[0] = blLabel;
+    finalRows.push(bSepRow);
+    var blRows = batchRowsByLoc[blKey] || [];
+    for (var blr = 0; blr < blRows.length; blr++) {
+      finalRows.push(blRows[blr]);
+    }
+  }
+
+
+  if (finalRows.length > 0) {
+    sheet.getRange(2, 1, finalRows.length, 20).setValues(finalRows);
+
+    // All data rows: white background
+    sheet.getRange(2, 1, finalRows.length, 20).setBackground('#ffffff');
+
+    // Style separator rows with location-specific colors
+    for (var si2 = 0; si2 < separatorMeta.length; si2++) {
+      var sepRowNum = separatorMeta[si2].idx + 2; // +1 for header, +1 for 1-based
+      sheet.getRange(sepRowNum, 1, 1, 20)
+        .setBackground(separatorMeta[si2].color)
+        .setFontColor('#ffffff')
+        .setFontWeight('bold')
+        .setFontSize(10);
+    }
+
+    // Style total rows (bold italic, light purple background)
+    for (var tr = 0; tr < finalRows.length; tr++) {
+      if (finalRows[tr][10] === '(no lot data)') {
+        sheet.getRange(tr + 2, 1, 1, 20)
+          .setBackground('#e8eaf6')
+          .setFontWeight('bold')
+          .setFontStyle('italic');
+      }
+    }
+
+    // Hide columns 15-17 (Orig W.Qty, Orig W.Site, Orig W.Location) and 19-20 (Orig W.Lot, Orig W.DateCode)
+    sheet.hideColumns(15, 3);
+    sheet.hideColumns(19, 2);
+
+    // Restore pending rows
+    var pendingCount = 0;
+    for (var pi = 0; pi < finalRows.length; pi++) {
+      var pRow = finalRows[pi];
+      var pSku = String(pRow[0]).trim();
+      if (!pSku || pSku.indexOf(' > ') > -1) continue; // skip separators
+      var pLot = String(pRow[10]).trim();
+      var pSite = String(pRow[6]).trim();
+      var pLoc = String(pRow[7]).trim();
+      var pKey = pSku + '|' + pLot + '|' + pSite + '|' + pLoc;
+      if (pendingMap[pKey]) {
+        var sheetRow = pi + 2;
+        var pm = pendingMap[pKey];
+        sheet.getRange(sheetRow, 9).setValue(pm.qty); // W.Qty
+        sheet.getRange(sheetRow, 18).setValue('Pending'); // Sync Status
+        if (pm.newSite && String(pm.newSite).trim() !== pSite) {
+          sheet.getRange(sheetRow, 7).setValue(pm.newSite);
+        }
+        if (pm.newLocation && String(pm.newLocation).trim() !== pLoc) {
+          sheet.getRange(sheetRow, 8).setValue(pm.newLocation);
+        }
+        var pLot = String(pRow[10]).trim();
+        if (pm.newLot && String(pm.newLot).trim() !== pLot) {
+          sheet.getRange(sheetRow, 11).setValue(pm.newLot);
+        }
+        var pDateCode = String(pRow[11]).trim();
+        if (pm.newDateCode && String(pm.newDateCode).trim() !== pDateCode) {
+          sheet.getRange(sheetRow, 12).setValue(pm.newDateCode);
+        }
+        sheet.getRange(sheetRow, 1, 1, 20).setBackground('#fff9c4');
+        pendingCount++;
+      }
+    }
+    if (pendingCount > 0) {
+      Logger.log('Batch tab: restored ' + pendingCount + ' pending rows');
+    }
+  }
+  Logger.log('Batch tab: ' + rows.length + ' data rows + ' + totalRows.length + ' totals + ' + separatorMeta.length + ' separators');
+}
+
+/**
+ * Writes a hidden SKU Lookup sheet for onEdit auto-populate.
+ * Contains all known SKUs from Katana + WASP with name, UOM, lot tracked, type.
+ * Called from runFullSync() after writing all tabs.
+ *
+ * @param {Spreadsheet} ss
+ * @param {Object} katanaData - { items: [...] }
+ * @param {Object} waspData - { items: [...] }
+ * @param {Object} batchData - { lotTrackedSkus: {...} }
+ */
+function writeSkuLookup_(ss, katanaData, waspData, batchData) {
+  var sheet = ss.getSheetByName('SKU Lookup');
+  if (!sheet) {
+    sheet = ss.insertSheet('SKU Lookup');
+  }
+
+  // Clear existing
+  var maxRows = sheet.getMaxRows();
+  if (maxRows > 1) {
+    sheet.getRange(2, 1, maxRows - 1, 7).clearContent();
+  }
+
+  // Headers: SKU, Name, UOM, Lot Tracked, Type, Price, Cost
+  sheet.getRange(1, 1, 1, 7).setValues([['SKU', 'Name', 'UOM', 'Lot Tracked', 'Type', 'Price', 'Cost']]);
+  sheet.getRange(1, 1, 1, 7).setBackground('#263238').setFontColor('#ffffff').setFontWeight('bold');
+
+  var lotTrackedSkus = (batchData && batchData.lotTrackedSkus) ? batchData.lotTrackedSkus : {};
+
+  // Build lookup map: SKU -> { name, uom, lotTracked, type, price, cost }
+  var skuMap = {};
+
+  // From Katana items (has uom, salesPrice, avgCost from variant/inventory data)
+  if (katanaData && katanaData.items) {
+    for (var ki = 0; ki < katanaData.items.length; ki++) {
+      var kItem = katanaData.items[ki];
+      if (!kItem.sku || isSkippedSku(kItem.sku)) continue;
+      if (!skuMap[kItem.sku]) {
+        skuMap[kItem.sku] = {
+          name: kItem.name || '',
+          uom: kItem.uom || 'ea',
+          lotTracked: lotTrackedSkus[kItem.sku] ? 'Yes' : 'No',
+          type: kItem.category || '',
+          price: kItem.salesPrice || 0,
+          cost: kItem.avgCost || 0
+        };
+      } else {
+        // Take highest price across locations
+        if ((kItem.salesPrice || 0) > skuMap[kItem.sku].price) {
+          skuMap[kItem.sku].price = kItem.salesPrice;
+        }
+        // Take highest cost across locations
+        if ((kItem.avgCost || 0) > skuMap[kItem.sku].cost) {
+          skuMap[kItem.sku].cost = kItem.avgCost;
+        }
+      }
+    }
+  }
+
+  // From WASP items (fill gaps — WASP has description, UOM, salesPrice)
+  if (waspData && waspData.items) {
+    for (var wi = 0; wi < waspData.items.length; wi++) {
+      var wItem = waspData.items[wi];
+      if (!wItem.itemNumber || isSkippedSku(wItem.itemNumber)) continue;
+      if (!skuMap[wItem.itemNumber]) {
+        skuMap[wItem.itemNumber] = {
+          name: wItem.description || '',
+          uom: wItem.uom || 'ea',
+          lotTracked: (wItem.lotTracking ? true : lotTrackedSkus[wItem.itemNumber]) ? 'Yes' : 'No',
+          type: 'unknown',
+          price: wItem.salesPrice || 0,
+          cost: 0
+        };
+      } else {
+        // WASP has better UOM info
+        if (wItem.uom && skuMap[wItem.itemNumber].uom === 'ea') {
+          skuMap[wItem.itemNumber].uom = wItem.uom;
+        }
+        // WASP has better name (includes [SKU] prefix)
+        if (wItem.description && !skuMap[wItem.itemNumber].name) {
+          skuMap[wItem.itemNumber].name = wItem.description;
+        }
+        // WASP per-item lotTracking overrides lotTrackedSkus map
+        if (wItem.lotTracking !== undefined && wItem.lotTracking !== null) {
+          skuMap[wItem.itemNumber].lotTracked = wItem.lotTracking ? 'Yes' : 'No';
+        }
+      }
+    }
+  }
+
+  // Build rows sorted by SKU
+  var skus = Object.keys(skuMap).sort();
+  if (skus.length === 0) {
+    Logger.log('SKU Lookup: no SKUs to write');
+    return;
+  }
+
+  var rows = [];
+  for (var si = 0; si < skus.length; si++) {
+    var s = skuMap[skus[si]];
+    rows.push([skus[si], s.name, s.uom, s.lotTracked, s.type, s.price, s.cost]);
+  }
+
+  sheet.getRange(2, 1, rows.length, 7).setValues(rows);
+
+  // Column widths
+  sheet.setColumnWidth(1, 130);
+  sheet.setColumnWidth(2, 250);
+  sheet.setColumnWidth(3, 50);
+  sheet.setColumnWidth(4, 80);
+  sheet.setColumnWidth(5, 80);
+  sheet.setColumnWidth(6, 70);
+  sheet.setColumnWidth(7, 70);
+
+  // Hide the sheet
+  sheet.hideSheet();
+
+  Logger.log('SKU Lookup: wrote ' + rows.length + ' SKUs');
+}
+
+// -------------------------------------------------------
+// ADJUSTMENT LOG — append-only log of all qty edits
+// -------------------------------------------------------
+
+// logAdjustment_ — writes to the shared "Adjustments Log" tab in the Debug/Command Center sheet.
+// Signature matches src/08_Logging.gs logAdjustment() except no saId (engin-src doesn't create Katana SAs).
+// Params: ss, source, action, user, sku, itemName, site, location, lot, expiry, diff, status
+function logAdjustment_(ss, source, action, user, sku, itemName, site, location, lot, expiry, diff, status) {
+  // Only log successful adjustments — errors stay in the flow tabs (F1-F5)
+  if (status === 'ERROR') return;
+
+  var adjSs = ss;
+  // Prefer writing to the Debug/Command Center sheet
+  try {
+    var debugId = PropertiesService.getScriptProperties().getProperty('DEBUG_SHEET_ID');
+    if (debugId) adjSs = SpreadsheetApp.openById(debugId);
+  } catch (e) { /* fall back to active spreadsheet */ }
+
+  var sheet = adjSs.getSheetByName('Adjustments Log');
+  if (!sheet) {
+    sheet = adjSs.insertSheet('Adjustments Log');
+    var headers = ['Timestamp', 'Source', 'Action', 'User', 'SKU', 'Item Name', 'Site', 'Location', 'Lot / Batch', 'Expiry', 'Diff', 'Katana SA#', 'Status'];
+    var colWidths = [155, 100, 80, 120, 120, 180, 120, 130, 120, 90, 70, 130, 80];
+    sheet.getRange(1, 1, 1, 13).setValues([headers]);
+    sheet.getRange(1, 1, 1, 13).setBackground('#1F2937').setFontColor('#ffffff').setFontWeight('bold');
+    sheet.setFrozenRows(1);
+    for (var c = 0; c < colWidths.length; c++) {
+      sheet.setColumnWidth(c + 1, colWidths[c]);
+    }
+    var fullRange   = sheet.getRange(2, 1, 998, 13);
+    var diffRange   = sheet.getRange(2, 11, 998, 1);
+    var statusRange = sheet.getRange(2, 13, 998, 1);
+    var rules = [];
+    // Row background by Source (col B): WASP=blue, Sync/Google Sheet=yellow
+    rules.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$B2="WASP"')         .setBackground('#dbeafe').setRanges([fullRange]).build());
+    rules.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$B2="Sync Sheet"')   .setBackground('#fef9c3').setRanges([fullRange]).build());
+    rules.push(SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied('=$B2="Google Sheet"') .setBackground('#fef9c3').setRanges([fullRange]).build());
+    rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('OK')   .setBackground('#c8e6c9').setRanges([statusRange]).build());
+    rules.push(SpreadsheetApp.newConditionalFormatRule().whenTextEqualTo('ERROR').setBackground('#ffcdd2').setRanges([statusRange]).build());
+    rules.push(SpreadsheetApp.newConditionalFormatRule().whenNumberGreaterThan(0).setBackground('#c8e6c9').setFontColor('#2e7d32').setRanges([diffRange]).build());
+    rules.push(SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(0)   .setBackground('#ffcdd2').setFontColor('#c62828').setRanges([diffRange]).build());
+    sheet.setConditionalFormatRules(rules);
+  }
+
+  var ts = Utilities.formatDate(new Date(), 'America/Vancouver', 'yyyy-MM-dd HH:mm:ss');
+  // Col 12 (Katana SA#) is always empty from engin-src — no SA created here
+  var row = [ts, source, action, user || '', sku, itemName || '', site || '', location, lot || '', expiry || '', diff, '', status];
+  var newRow = sheet.getLastRow() + 1;
+  sheet.getRange(newRow, 1, 1, 13).setValues([row]);
+}
+
+// -------------------------------------------------------
+// WASP SNAPSHOT — detect external changes between syncs
+// -------------------------------------------------------
+
+/**
+ * Save a snapshot of WASP qty by key to ScriptProperties.
+ * Called at the end of runFullSync() after all tabs are written.
+ * Key format: "SKU|site|location|lot" → qty
+ */
+function saveWaspSnapshot_(waspData) {
+  var snapshot = {};
+  for (var i = 0; i < waspData.items.length; i++) {
+    var item = waspData.items[i];
+    if (!item.itemNumber) continue;
+    var key = item.itemNumber + '|' + (item.siteName || '') + '|' + (item.locationCode || '') + '|' + (item.lot || '');
+    snapshot[key] = Math.round((parseFloat(item.qtyAvailable) || 0) * 100) / 100;
+  }
+  var json = JSON.stringify(snapshot);
+  // ScriptProperties 500KB limit — check size
+  if (json.length > 400000) {
+    Logger.log('WARNING: WASP snapshot too large (' + (json.length / 1024).toFixed(0) + 'KB) — skipping save');
+    return;
+  }
+  PropertiesService.getScriptProperties().setProperty('WASP_QTY_SNAPSHOT', json);
+  Logger.log('WASP snapshot saved: ' + Object.keys(snapshot).length + ' keys, ' + (json.length / 1024).toFixed(1) + 'KB');
+}
+
+/**
+ * Detect external WASP changes by comparing current data against saved snapshot.
+ * Logs any unaccounted qty differences to the Adjustments tab with Source="External".
+ * Returns count of external changes detected.
+ */
+function detectExternalChanges_(ss, waspData) {
+  var raw = PropertiesService.getScriptProperties().getProperty('WASP_QTY_SNAPSHOT');
+  if (!raw) {
+    Logger.log('No previous WASP snapshot found — skipping external change detection (first run)');
+    return 0;
+  }
+
+  var oldSnapshot;
+  try {
+    oldSnapshot = JSON.parse(raw);
+  } catch (e) {
+    Logger.log('WASP snapshot parse error — skipping: ' + e.message);
+    return 0;
+  }
+
+  // Build current snapshot
+  var currentSnapshot = {};
+  for (var i = 0; i < waspData.items.length; i++) {
+    var item = waspData.items[i];
+    if (!item.itemNumber) continue;
+    var key = item.itemNumber + '|' + (item.siteName || '') + '|' + (item.locationCode || '') + '|' + (item.lot || '');
+    currentSnapshot[key] = Math.round((parseFloat(item.qtyAvailable) || 0) * 100) / 100;
+  }
+
+  var detected = 0;
+
+  // Check all current keys against old snapshot
+  var currentKeys = Object.keys(currentSnapshot);
+  for (var ci = 0; ci < currentKeys.length; ci++) {
+    var ck = currentKeys[ci];
+    var newQty = currentSnapshot[ck];
+    var oldQty = oldSnapshot.hasOwnProperty(ck) ? oldSnapshot[ck] : 0;
+    var diff = Math.round((newQty - oldQty) * 100) / 100;
+    if (Math.abs(diff) < 0.01) continue;
+
+    // New item appeared — could be auto-sync or external
+    if (!oldSnapshot.hasOwnProperty(ck) && newQty > 0) {
+      // Skip — likely auto-sync or F1 adding new stock. Only flag qty changes on existing items.
+      continue;
+    }
+
+    var parts = ck.split('|');
+    var sku = parts[0] || '';
+    var loc = (parts[1] || '') + '|' + (parts[2] || '');
+    var lot = parts[3] || '';
+
+    logAdjustment_(ss, 'WASP', '', sku, '', loc, lot, oldQty, newQty, Math.round((newQty - oldQty) * 100) / 100, 'Detected', 'Unaccounted change between syncs');
+    detected++;
+  }
+
+  // Check for items that disappeared (in old but not in current)
+  var oldKeys = Object.keys(oldSnapshot);
+  for (var oi = 0; oi < oldKeys.length; oi++) {
+    var ok = oldKeys[oi];
+    if (currentSnapshot.hasOwnProperty(ok)) continue; // already checked above
+    var removedQty = oldSnapshot[ok];
+    if (Math.abs(removedQty) < 0.01) continue; // was zero anyway
+
+    var oParts = ok.split('|');
+    var oSku = oParts[0] || '';
+    var oLoc = (oParts[1] || '') + '|' + (oParts[2] || '');
+    var oLot = oParts[3] || '';
+
+    logAdjustment_(ss, 'WASP', '', oSku, '', oLoc, oLot, removedQty, 0, -removedQty, 'Detected', 'Item removed between syncs');
+    detected++;
+  }
+
+  if (detected > 0) {
+    Logger.log('External changes detected: ' + detected + ' qty differences since last sync');
+  }
+  return detected;
+}

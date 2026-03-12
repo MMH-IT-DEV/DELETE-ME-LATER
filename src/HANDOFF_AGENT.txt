@@ -1,0 +1,379 @@
+# Katana-WASP Integration — Agent Handoff
+# Last Updated: 2026-02-27
+
+===========================================================
+## WHAT THIS PROJECT IS
+===========================================================
+
+Google Apps Script (GAS) integration that syncs inventory
+between Katana MRP and WASP InventoryCloud.
+
+There are TWO separate GAS projects:
+  1. src/       — webhook handler (clasp push to deploy)
+  2. engin-src/ — sheet-based sync control panel (manually
+                  copy .txt files into GAS editor)
+
+GAS Script ID (src/): 1vMGYLeN5iCcLzW9mF0DJB3bT-My_yj1Tv8MVVnaVWKLb4m582ZqyT4Lg
+Debug Sheet:          1eX7MCU-Is5CMmROL1PfuhGoB73yRF7dYdyXHqzMYOUQ
+Sync Sheet:           1FiG8G3J-IbKoCzOiQ4aVCg6N1JBS01w76igmpkECJSI
+WASP Base URL:        https://mymagichealer.waspinventorycloud.com
+Deployed webhook URL: https://script.google.com/macros/s/AKfycbzSojwLpeEo6irjUpCoUnRB9f_n8NW3vUWkShU8zt6kiHffbKkeJVxXNdspA0N28tv75w/exec
+
+===========================================================
+## CRITICAL GAS RULES — NEVER VIOLATE
+===========================================================
+
+- Use VAR only — no const, let, arrow functions (=>),
+  template literals (`${}`), for-of loops, or destructuring.
+  Any of these will cause the file to silently fail to load.
+- WASP write endpoints require ARRAY payload: [{...}]
+  NOT object {…}
+- clasp push REPLACES all remote GAS files — never add
+  functions in the remote GAS editor only, or they will
+  be deleted on next push.
+
+===========================================================
+## THE 5 SYNC FLOWS
+===========================================================
+
+F1: Katana PO received → WASP RECEIVING-DOCK
+    - Trigger: Katana webhook (purchase_order.received)
+    - Handler: handlePurchaseOrderReceived() in 02_Handlers.gs
+    - Materials/Intermediates auto-route to PRODUCTION
+    - Products go to RECEIVING-DOCK
+
+F2: WASP qty add/remove/move → Katana Stock Adjustment
+    - Trigger: WASP callout → doPost
+    - Handler: handleWaspQuantityAdded/Removed/ItemMoved
+      in 03_WaspCallouts.gs
+    - 4-second batch window groups rapid callouts into 1 SA
+    - F2_SKIP_LOCATIONS = ['SHOPIFY'] — prevents double-deduct
+    - SYNC_CACHE_SECONDS = 120 prevents feedback loops
+    - Logs ONLY to Adjustments tab (NOT Activity tab)
+
+F3: Katana stock transfers → WASP (auto-poll)
+    - Trigger: GAS time trigger (every N minutes)
+    - Handler: 07_F3_AutoPoll.gs
+
+F4: Katana MO complete → WASP deductions
+    - Trigger: Katana webhook (manufacturing_order.done)
+    - Handler: handleManufacturingOrderDone() in 02_Handlers.gs
+    - Deducts ingredients, adds output with lot/batch
+
+F5: ShipStation shipped → WASP SHOPIFY deduction
+    - Trigger: ShipStation SHIP_NOTIFY webhook
+    - Payload format: { resource_type: 'SHIP_NOTIFY',
+                        resource_url: '...' }
+    - Handler: handleShipNotify() in 06_ShipStation.gs
+    - BUNDLE_MAP expands VB-* SKUs to component SKUs
+    - Current bundles:
+        VB-UFC-DUO:     UFC-4OZ x2, TTFC-1OZ x1
+        VB-CPT-DUO-4OZ: B-PURPLE-GREEN-DUO x1, TTFC-1OZ x1
+        VB-UHP:         UFC-4OZ x3, TTFC-1OZ x1, WH-8OZ-W x1
+        VB-UFC-4OZ-SUB: UFC-4OZ x1
+
+===========================================================
+## KEY FILES — src/ (webhook handler)
+===========================================================
+
+00_Config.gs    — LOCATIONS, FLOWS, F2_SKIP_LOCATIONS,
+                  SYNC_CACHE_SECONDS, SITE_TO_KATANA_LOCATION
+01_Router.gs    — doPost entry point + routeWebhook()
+                  ShipStation routes on resource_type='SHIP_NOTIFY'
+                  WASP routes on action= (no dot)
+                  Katana routes on action= (has dot)
+02_Handlers.gs  — F1/F3/F4/F5-cancel handlers
+03_WaspCallouts.gs — F2 handlers (add/remove/move)
+04_KatanaAPI.gs — Katana REST wrappers
+05_WaspAPI.gs   — WASP REST wrappers
+06_ShipStation.gs — F5: ShipStation API, BUNDLE_MAP,
+                    processShipment(), processVoid()
+07_F3_AutoPoll.gs — F3 auto-poll logic
+08_Logging.gs   — logActivity(), logFlowDetail(),
+                  logAdjustment(), logToSheet()
+09_Utils.gs     — setupAdjustmentsLogTab(), test functions
+10_InventorySync.gs — Full reset sync
+11_SyncHelpers.gs — buildKatanaMap, retry wrappers
+
+===========================================================
+## KEY FILES — engin-src/ (sync sheet control panel)
+===========================================================
+
+01_Code.txt     — Menu, onEdit trigger, runFullSync()
+02_KatanaAPI.txt — Katana data fetch (fetchAllKatanaData)
+                   item.type = 'Material'/'Intermediate'/'Product'
+                   item.category = 'PACKAGING'/'RAW MATER'/etc.
+03_WaspAPI.txt  — WASP data fetch
+04_SyncEngine.txt — waspCreateItem(), autoCreateMissingItems()
+04b_RawTabs.txt — Tab writers: writeKatanaTab(),
+                  writeWaspTab(), writeBatchTab(),
+                  logAdjustment_()
+05_PushEngine.txt — pushToWasp(), pushKatanaAdjustments_(),
+                   executeAction_(), -46002/-57041 retry logic
+
+===========================================================
+## KATANA TAB COLUMN LAYOUT (engin-src) — 15 COLUMNS
+===========================================================
+
+After 2026-02-27 fixes, the Katana tab has 15 columns:
+
+  [0]  A  SKU
+  [1]  B  Name
+  [2]  C  Location (Katana location name)
+  [3]  D  Type     (Katana category: PACKAGING/RAW MATER/etc.)
+                   — display only, NOT used for routing
+  [4]  E  Lot Tracked  (Yes/No)
+  [5]  F  Batch        (lot number)
+  [6]  G  Expiry       (date string)
+  [7]  H  UOM
+  [8]  I  K. Qty       (Katana stock qty)
+  [9]  J  WASP Qty     (editable — user changes this to adjust)
+  [10] K  Match        (MATCH/MISMATCH/ZERO/ONLY)
+  [11] L  WASP Status  (Synced/Push/NEW/ERROR)
+  [12] M  Orig WASP Qty (hidden, width=1 — stores baseline)
+  [13] N  Adj Status   (Pending/ERROR/Pushed YYYY-MM-DD)
+  [14] O  K.Type       (hidden, width=1 — Katana item type:
+                        Material/Intermediate/Product)
+                       — used by push engine for WASP routing
+
+Push routing (pushKatanaAdjustments_ in 05_PushEngine.txt):
+  itemType = row[14]  (K.Type hidden column)
+  if katanaLoc === 'Storage Warehouse' → SW-STORAGE site
+  if itemType === 'Material' || 'Intermediate' → PRODUCTION
+  else → UNSORTED (default)
+
+===========================================================
+## LOGGING ARCHITECTURE (src/)
+===========================================================
+
+logToSheet(type, meta, detail)
+  → Logger.log only, NOT written to sheet. Debug/trace.
+
+logActivity(flow, detail, status, label, subItems)
+  → Activity tab. Every F1/F3/F4/F5 operation.
+  → F2 does NOT log here (by design, removed this session)
+
+logFlowDetail(flow, execId, parent, children)
+  → F1-F5 tabs. Per-flow audit trail.
+  → F2 does NOT log here (removed this session)
+
+logAdjustment(source, action, user, sku, itemName,
+              site, location, lot, expiry, diff,
+              katanaSaNum, saId, status)
+  → Adjustments Log tab.
+  → F2 (WASP callouts) logs here.
+  → engin-src sheet pushes log here.
+
+Color coding in Activity tab:
+  qty red   (#cc0000) = deduction/removal
+  qty green (#008000) = addition
+  sub-item bg light red (#ffebee) = error
+  sub-item bg light green (#e8f5e9) = success
+
+===========================================================
+## CHANGES MADE THIS SESSION (2026-02-27)
+===========================================================
+
+### src/01_Router.gs
+  - Added ShipStation SHIP_NOTIFY routing (was missing —
+    all F5 webhooks were silently dropped):
+      if (payload.resource_type === 'SHIP_NOTIFY' &&
+          payload.resource_url)
+        return handleShipNotify(payload.resource_url);
+
+### src/06_ShipStation.gs
+  - Fixed VB-UFC-DUO: UFC-4OZ qty 1 → 2 (matches Katana BOM)
+  - Added VB-UFC-4OZ-SUB: UFC-4OZ x1 (new bundle)
+  - Added itemDateCode capture + exp: in action field for
+    lot fallback logging
+
+### src/03_WaspCallouts.gs
+  - Removed ALL logActivity() and logFlowDetail() calls.
+    F2 now logs ONLY to Adjustments tab (logAdjustment).
+    This stops WASP callout adjustments from appearing in
+    the Activity tab.
+  - getNextExecId(null) instead of getNextExecId(activitySheet)
+
+### engin-src/04b_RawTabs.txt
+  - Fixed: Sync Now now only preserves Pending rows in
+    adjPendingMap. ERROR rows are dropped so they get fresh
+    WASP data instead of staying frozen with stale qty.
+  - Added 15th column K.Type (hidden) containing row.type
+    (Katana API item type: Material/Intermediate/Product)
+    for correct push routing.
+  - NUM_COLS 14 → 15
+
+### engin-src/05_PushEngine.txt
+  - Fixed: pushKatanaAdjustments_ now also retries ERROR rows
+    (was only retrying Pending). Condition changed to:
+    adjStatus === 'Pending' || adjStatus === 'ERROR'
+  - Fixed: -46002 REMOVE retry now searches all WASP locations
+    when stock is not at the assumed location. Previously it
+    gave up if realQty=0 at assumed location (e.g. UNSORTED).
+    Now scans all locations and retries from actual location.
+  - Fixed: itemType now reads from row[14] (K.Type, hidden)
+    instead of row[3] (category column). This restores correct
+    PRODUCTION routing for Material/Intermediate items.
+  - KATANA_COLS 14 → 15 in both push functions
+
+===========================================================
+## ROOT CAUSE OF -46002 ERRORS (for reference)
+===========================================================
+
+The -46002 "Insufficient quantity" error from WASP means
+a REMOVE was attempted at a location that has no stock.
+
+Root cause chain:
+1. writeKatanaTab writes Katana category ("PACKAGING") to
+   col D. Push engine read col D as itemType and checked
+   itemType === 'Material' for PRODUCTION routing.
+2. Category values never matched → ALL items routed to
+   UNSORTED, even materials whose stock is at PRODUCTION.
+3. REMOVE from UNSORTED fails → -46002.
+
+Fixes applied:
+  - Col D still shows category (user visibility)
+  - Col O (row[14]) now has Katana item type for routing
+  - Push engine reads row[14] for routing
+  - -46002 retry also does full location search as fallback
+
+===========================================================
+## PENDING TASKS (not yet done)
+===========================================================
+
+HIGH PRIORITY — deploy these local changes to GAS:
+
+1. Deploy src/ files (clasp push):
+     src/01_Router.gs
+     src/06_ShipStation.gs
+     src/03_WaspCallouts.gs
+   Then: GAS editor → Deploy → New Version → update
+   deployment to use new version.
+
+2. Deploy engin-src/ files (copy into GAS editor manually):
+     engin-src/04b_RawTabs.txt → 04b_RawTabs.gs
+     engin-src/05_PushEngine.txt → 05_PushEngine.gs
+   Then: run Sync Now to rebuild Katana tab with new
+   15-col layout (adds K.Type hidden column).
+
+3. Run setupAdjustmentsLogTab() once in GAS editor to
+   create/reset the Adjustments Log tab with correct
+   headers.
+
+MEDIUM PRIORITY:
+
+4. Verify WASP callout template field names:
+   - Try {trans.LotNumber} instead of {trans.Lot}
+   - Try {trans.Assignee} vs {trans.ModifiedBy} for user
+
+5. Set up Move callout in WASP:
+   Trigger: any item / is: move
+   Request Body:
+   {
+     "action": "item_moved",
+     "ItemNumber": "{item.AssetTag}",
+     "Quantity": "{trans.AssetTransQuantity}",
+     "SiteName": "{trans.SiteName}",
+     "FromLocationCode": "{trans.FromLocationCode}",
+     "ToLocationCode": "{trans.ToLocationCode}",
+     "Lot": "{trans.LotNumber}",
+     "DateCode": "{trans.DateCode}",
+     "Assignee": "{trans.Assignee}"
+   }
+
+6. F3 STORAGE location bug: WASP -57009 "STORAGE does not
+   exist" — check WASP for correct location name for
+   Storage Warehouse site, update F3_SITE_MAP in
+   07_F3_AutoPoll.gs.
+
+7. F5 full-date timestamp: currently shows time-only (8:03)
+   instead of full date (2026-02-19 08:03) in F5 headers.
+
+LOW PRIORITY:
+
+8. Fix B-WAX qty 1,222,576.6 in Katana (bad data)
+9. Run auditDuplicateMOs() — 9 duplicate MOs outstanding
+10. Run auditDuplicatePOs() — PO-546 received twice
+
+===========================================================
+## WASP CALLOUT TEMPLATES (current)
+===========================================================
+
+### Remove callout:
+{
+  "action": "quantity_removed",
+  "ItemNumber": "{trans.AssetTag}",
+  "Quantity": "{trans.AssetTransQuantity}",
+  "SiteName": "{trans.SiteName}",
+  "LocationCode": "{trans.LocationCode}",
+  "Lot": "{trans.LotNumber}",
+  "DateCode": "{trans.DateCode}",
+  "Notes": "{trans.Notes}",
+  "Assignee": "{trans.Assignee}"
+}
+Trigger: any item / is: remove
+
+### Add callout:
+{
+  "action": "quantity_added",
+  "ItemNumber": "{trans.AssetTag}",
+  "Quantity": "{trans.AssetTransQuantity}",
+  "SiteName": "{trans.SiteName}",
+  "LocationCode": "{trans.LocationCode}",
+  "Lot": "{trans.LotNumber}",
+  "DateCode": "{trans.DateCode}",
+  "Notes": "{trans.Notes}",
+  "Assignee": "{trans.Assignee}"
+}
+Trigger: any item / is: add
+
+===========================================================
+## KNOWN BUGS / LIMITATIONS
+===========================================================
+
+| Issue                           | Status              |
+|---------------------------------|---------------------|
+| Lot mismatch: {trans.Lot} vs    | Pending — try       |
+| WASP UI lot display             | {trans.LotNumber}   |
+| F3 STORAGE location -57009      | Pending — check     |
+|                                 | WASP location name  |
+| F4: EGG-X, FGJ-US-1/2 missing  | Needs manual WASP   |
+| lot (-57041)                    | stock fix in UI     |
+| WH-8OZ-W F2 adjustment failures | Needs item-sync fix |
+| F5 header timestamp time-only   | Minor — not fixed   |
+
+===========================================================
+## IMPORTANT PATTERNS
+===========================================================
+
+### Error code meanings (WASP):
+  -46002  Insufficient quantity at location (REMOVE > stock)
+  -57041  Lot/DateCode required (item is lot-tracked)
+  -57009  Location does not exist
+  -70010  Duplicate order number (treat as success)
+
+### executeAction_() retry chain (05_PushEngine.txt):
+  1. First attempt with smart-routed location
+  2. -46002: search same location for real qty → retry
+  3. -46002 + realQty=0: search ALL locations → retry
+     from actual location (fix added 2026-02-27)
+  4. -57041 ADD: retry with NO-LOT + future dateCode
+  5. -57041 REMOVE: lookup actual lot from WASP → retry
+
+### WASP advancedinventorysearch response structure:
+  searchResult.Data.ResultList  (array of items)
+  item.ItemNumber, item.LocationCode, item.SiteName
+  item.QtyAvailable, item.Lot
+
+### Katana API item types (from capitalizeType()):
+  'material'     → 'Material'
+  'intermediate' → 'Intermediate'
+  'product'      → 'Product'
+  Materials come from /materials API (always type='material')
+  Products come from /products API (type from prod.type field)
+
+### F2 feedback loop prevention:
+  - SYNC_CACHE_SECONDS=120 in 00_Config.gs
+  - F2_SKIP_LOCATIONS = ['SHOPIFY'] — WASP callouts from
+    SHOPIFY location are ignored (F5 handles those)
+  - Both use script cache keyed on SKU+action

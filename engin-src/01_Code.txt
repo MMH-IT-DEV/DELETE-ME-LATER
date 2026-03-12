@@ -1,0 +1,470 @@
+/**
+ * Main entry point - Menu, triggers, orchestration
+ * CRITICAL: GAS V8 requires var only (no const/let), no arrow functions, no template literals
+ */
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('Inventory Sync')
+    .addItem('Sync Now', 'runFullSync')
+    .addItem('Push to WASP', 'pushToWasp')
+    .addSeparator()
+    .addItem('Setup Auto Sync (hourly)', 'createAutoSyncTrigger')
+    .addItem('Stop Auto Sync', 'removeAllTriggers')
+    .addSeparator()
+    .addItem('Test Katana Connection', 'testKatana')
+    .addItem('Test Wasp Connection', 'testWasp')
+    .addToUi();
+}
+
+/**
+ * Simple trigger that fires on user edits to the Wasp and Batch tabs.
+ * Marks rows as Pending when editable columns are changed.
+ * IMPORTANT: Simple triggers cannot call services requiring auth (like UrlFetchApp)
+ *
+ * Wasp tab (18 cols): editable cols D(4), E(5), G(7), H(8), L(12)=W.Qty — C(3)=Type, J(10)=K.Qty, F(6)=LotTracked are read-only
+ * Batch tab (20 cols): editable cols G(7)=W.Site, H(8)=W.Location, I(9)=W.Qty, K(11)=W.Lot, L(12)=W.DateCode
+ */
+function onEdit(e) {
+  if (!e || !e.range) return;
+  var sheet = e.range.getSheet();
+  var sheetName = sheet.getName();
+
+  var row = e.range.getRow();
+  var col = e.range.getColumn();
+
+  // Katana tab: handle WASP Status (col 12) + Qty edits (col 9) for adjustments
+  if (sheetName === 'Katana') {
+    if (row < 2) return;
+    var skuVal = String(sheet.getRange(row, 1).getValue() || '').trim();
+    if (skuVal.indexOf(' > ') > -1) return; // separator row
+
+    var NUM_COLS_K = 14;
+
+    // WASP Status column (col 12): user types "Push" to queue sync
+    if (col === 12) {
+      var statusVal = String(e.range.getValue() || '').trim().toUpperCase();
+      if (statusVal === 'PUSH') {
+        sheet.getRange(row, 12).setValue('Push');
+        sheet.getRange(row, 1, 1, NUM_COLS_K).setBackground('#fff8e1');
+      }
+      return;
+    }
+
+    // WASP Qty column (col 10): editable for adj adjustments
+    if (col === 10) {
+      var origQty = sheet.getRange(row, 13).getValue();  // Orig WASP Qty col
+      var newVal = e.range.getValue();
+      var newNum = parseFloat(newVal) || 0;
+      var origNum = (origQty instanceof Date) ? 0 : (parseFloat(origQty) || 0);
+
+      if (Math.abs(newNum - origNum) > 0.01) {
+        // Changed from original — mark Pending
+        sheet.getRange(row, 14).setValue('Pending');
+        sheet.getRange(row, 1, 1, NUM_COLS_K).setBackground('#fff8e1');
+      } else {
+        // Reverted to original — clear Pending
+        sheet.getRange(row, 14).setValue('');
+        sheet.getRange(row, 1, 1, NUM_COLS_K).setBackground(null);
+      }
+      return;
+    }
+
+    return;
+  }
+
+  // Only handle Wasp and Batch tabs
+  if (sheetName !== 'Wasp' && sheetName !== 'Batch') return;
+
+  if (row < 2) return;
+
+  // Sheet-specific config: { numCols, statusCol, origColMap, qtyCol, origQtyCol, origSiteCol, trackedPairs }
+  var config;
+  if (sheetName === 'Wasp') {
+    config = {
+      numCols: 18,
+      statusCol: 16,
+      // origColMap: maps 1-based edited col → 1-based orig col (null = no orig tracking)
+      // Editable: D(4)=Site→M(13), E(5)=Location→N(14), G(7)=Lot→Q(17), H(8)=DateCode→R(18), L(12)=W.Qty→K(11)
+      origColMap: { 2: null, 4: 13, 5: 14, 7: 17, 8: 18, 12: 11 },
+      qtyCol: 12,
+      origQtyCol: 11,
+      origSiteCol: 13,
+      trackedPairs: [ [12, 11], [4, 13], [5, 14], [7, 17], [8, 18] ]  // [editCol, origCol]
+    };
+  } else {
+    // Batch: W.Site(7)→Orig(16), W.Location(8)→Orig(17), W.Qty(9)→Orig(15), W.Lot(11)→Orig(19), W.DateCode(12)→Orig(20)
+    config = {
+      numCols: 20,
+      statusCol: 18,
+      origColMap: { 7: 16, 8: 17, 9: 15, 11: 19, 12: 20 },
+      qtyCol: 9,
+      origQtyCol: 15,
+      origSiteCol: 16,
+      trackedPairs: [ [9, 15], [7, 16], [8, 17], [11, 19], [12, 20] ]
+    };
+  }
+
+  // Skip separator rows (contain " > " in col A)
+  var skuVal = String(sheet.getRange(row, 1).getValue() || '').trim();
+  if (skuVal.indexOf(' > ') > -1) return;
+
+  // DELETE detection: user types "DELETE" in Status column
+  if (col === config.statusCol) {
+    var statusVal = String(e.range.getValue() || '').trim().toUpperCase();
+    if (statusVal === 'DELETE') {
+      sheet.getRange(row, config.statusCol).setValue('DELETE');
+      sheet.getRange(row, 1, 1, config.numCols).setBackground('#ffcdd2');
+      return;
+    }
+  }
+
+  // Auto-populate new Wasp rows from SKU Lookup sheet when SKU (col 1) is edited
+  if (sheetName === 'Wasp' && col === 1 && skuVal !== '') {
+    var origQtyCheck = sheet.getRange(row, config.origQtyCol).getValue();
+    var origSiteCheck = String(sheet.getRange(row, config.origSiteCol).getValue() || '').trim();
+    var isNewRowCheck = (!origQtyCheck && origQtyCheck !== 0 && origSiteCheck === '');
+    if (isNewRowCheck) {
+      var lookupSheet = e.range.getSheet().getParent().getSheetByName('SKU Lookup');
+      if (lookupSheet) {
+        var lookupLastRow = lookupSheet.getLastRow();
+        if (lookupLastRow > 1) {
+          var lookupData = lookupSheet.getRange(2, 1, lookupLastRow - 1, 5).getValues();
+          for (var li = 0; li < lookupData.length; li++) {
+            if (String(lookupData[li][0]).trim() === skuVal) {
+              sheet.getRange(row, 2).setValue(lookupData[li][1]);  // Name
+              sheet.getRange(row, 9).setValue(lookupData[li][2]);  // UOM
+              sheet.getRange(row, 6).setValue(lookupData[li][3]);  // Lot Tracked (read-only info)
+              sheet.getRange(row, config.statusCol).setValue('Pending');
+              sheet.getRange(row, 1, 1, config.numCols).setBackground('#fff8e1');
+              break;
+            }
+          }
+        }
+      }
+      return;
+    }
+  }
+
+  if (!config.origColMap.hasOwnProperty(col)) return;
+
+  var origCol = config.origColMap[col];
+
+  // Check if this is a new row (no orig data)
+  var origQtyVal = sheet.getRange(row, config.origQtyCol).getValue();
+  var origSiteVal = String(sheet.getRange(row, config.origSiteCol).getValue() || '').trim();
+  var isNewRow = (!origQtyVal && origQtyVal !== 0 && origSiteVal === '');
+
+  // New rows or columns without orig tracking: always mark Pending
+  if (origCol === null || isNewRow) {
+    sheet.getRange(row, config.statusCol).setValue('Pending');
+    sheet.getRange(row, 1, 1, config.numCols).setBackground('#fff8e1');
+    return;
+  }
+
+  // Compare edited value with original
+  var newVal = e.range.getValue();
+  var origVal = sheet.getRange(row, origCol).getValue();
+  var thisChanged = false;
+
+  if (col === config.qtyCol) {
+    var newNum = parseFloat(newVal) || 0;
+    var origNum = origVal instanceof Date ? 0 : (parseFloat(origVal) || 0);
+    thisChanged = Math.abs(newNum - origNum) > 0.01;
+  } else {
+    thisChanged = String(newVal).trim() !== String(origVal).trim();
+  }
+
+  if (thisChanged) {
+    sheet.getRange(row, config.statusCol).setValue('Pending');
+    sheet.getRange(row, 1, 1, config.numCols).setBackground('#fff8e1');
+    return;
+  }
+
+  // This column matches original — check ALL tracked columns before clearing Pending
+  var allMatch = true;
+  for (var tp = 0; tp < config.trackedPairs.length; tp++) {
+    var editCol = config.trackedPairs[tp][0];
+    var oCol = config.trackedPairs[tp][1];
+    if (editCol === col) continue; // already checked above
+
+    var oVal = sheet.getRange(row, oCol).getValue();
+    var cVal = sheet.getRange(row, editCol).getValue();
+
+    if (editCol === config.qtyCol) {
+      oVal = (oVal instanceof Date) ? 0 : (parseFloat(oVal) || 0);
+      cVal = parseFloat(cVal) || 0;
+      if (Math.abs(cVal - oVal) > 0.01) { allMatch = false; break; }
+    } else {
+      if (String(cVal).trim() !== String(oVal).trim()) { allMatch = false; break; }
+    }
+  }
+
+  if (allMatch) {
+    sheet.getRange(row, config.statusCol).setValue('');
+    sheet.getRange(row, 1, 1, config.numCols).setBackground(null);
+  }
+}
+
+/**
+ * Force sync — bypasses business hours check. Use from editor/menu for manual runs.
+ */
+function runFullSyncForce() {
+  runFullSyncCore_();
+}
+
+/**
+ * Main orchestrator - called from menu or hourly timer
+ * Fetches fresh data, auto-creates missing items, writes all tabs, logs sync
+ */
+function runFullSync() {
+  // Business hours check: 7am-7pm America/Vancouver
+  var hour = parseInt(Utilities.formatDate(new Date(), 'America/Vancouver', 'H'), 10);
+  if (hour < 7 || hour >= 19) {
+    Logger.log('runFullSync skipped — outside business hours (' + hour + ':xx Vancouver)');
+    return;
+  }
+  runFullSyncCore_();
+}
+
+function runFullSyncCore_() {
+
+  var startTime = new Date();
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  try {
+    // 1. Fetch fresh data
+    var katanaData = fetchAllKatanaData();
+    var waspData = fetchAllWaspData();
+    var batchData = fetchAllBatchData(katanaData);
+
+    // 1b. Snapshot diff detection DISABLED — only manual adjustments belong in the Adjustments log
+    // var externalCount = detectExternalChanges_(ss, waspData);
+    var externalCount = 0;
+
+    // Katana batch_tracking = source of truth for lot tracking
+    // Merge product/material batch_tracking into lotTrackedSkus
+    if (katanaData.batchTrackingSkus) {
+      var btSkus = Object.keys(katanaData.batchTrackingSkus);
+      for (var bti = 0; bti < btSkus.length; bti++) {
+        batchData.lotTrackedSkus[btSkus[bti]] = true;
+      }
+      Logger.log('Lot tracking: merged ' + btSkus.length + ' SKUs from Katana batch_tracking setting');
+    }
+
+    // Fetch per-item lot tracking settings from WASP item catalog (for display only)
+    var waspLotSettings = fetchWaspItemLotSettings();
+
+    // Stamp per-item lotTracking onto waspData.items for writeWaspTab
+    // This shows what WASP currently has (may differ from Katana truth)
+    for (var wi2 = 0; wi2 < waspData.items.length; wi2++) {
+      var wiSku = waspData.items[wi2].itemNumber;
+      if (wiSku && waspLotSettings.hasOwnProperty(wiSku)) {
+        waspData.items[wi2].lotTracking = waspLotSettings[wiSku];
+      }
+    }
+
+    // Also augment lotTrackedSkus from WASP inventory: items with lot values are lot-tracked
+    for (var wi = 0; wi < waspData.items.length; wi++) {
+      if (waspData.items[wi].itemNumber && waspData.items[wi].lot) {
+        batchData.lotTrackedSkus[waspData.items[wi].itemNumber] = true;
+      }
+    }
+
+    // 2. Auto-create disabled — user controls via WASP Status dropdown (NEW) + Push to WASP
+    // var createResult = autoCreateMissingItems(katanaData, waspData, batchData);
+    // if (createResult.created.length > 0) {
+    //   waspData = fetchAllWaspData();
+    //   var createDetails = 'Created ' + createResult.created.length + ' items: ' + createResult.created.join(', ');
+    //   var createDuration = ((new Date()) - startTime) / 1000;
+    //   logSyncHistory(ss, 'AUTO-CREATE', createDetails, createDuration, createResult.failed.length > 0 ? 'PARTIAL' : 'SUCCESS');
+    // }
+
+    // 3. Delete old tabs on first run (one-time cleanup)
+    deleteOldTabs(ss);
+
+    // 4. Write all tabs
+    writeKatanaTab(ss, katanaData, batchData, waspData);
+    writeWaspTab(ss, waspData, katanaData, batchData);
+    writeBatchTab(ss, katanaData, waspData, batchData);
+    writeSkuLookup_(ss, katanaData, waspData, batchData);
+
+    // 5. Auto-push new items to WASP (writeKatanaTab sets eligible items to "Push")
+    var autoPushResult = pushKatanaSyncRows_(ss);
+    if (autoPushResult.success > 0 || autoPushResult.errors > 0) {
+      Logger.log('Auto-push: ' + autoPushResult.success + ' created, ' + autoPushResult.errors + ' errors');
+    }
+
+    // 6. Snapshot save DISABLED — sync diff detection removed
+    // saveWaspSnapshot_(waspData);
+
+    // 7. Log sync
+    var duration = ((new Date()) - startTime) / 1000;
+    var autoDetail = autoPushResult.success > 0 ? ', AutoPush=' + autoPushResult.success : '';
+    var extDetail = externalCount > 0 ? ', External=' + externalCount : '';
+    var details = 'Katana=' + katanaData.items.length + ', Wasp=' + waspData.items.length + autoDetail + extDetail;
+    logSyncHistory(ss, 'SYNC', details, 0, '', duration, 'SUCCESS');
+
+    Logger.log('Full sync complete: ' + details + ', Duration=' + duration.toFixed(1) + 's');
+
+    // Show toast (menu context only)
+    try {
+      ss.toast('Sync complete: ' + details, 'Inventory Sync', 5);
+    } catch (uiErr) { /* timer context */ }
+
+  } catch (e) {
+    var duration = ((new Date()) - startTime) / 1000;
+    logSyncHistory(ss, 'SYNC', 'ERROR: ' + e.message, 1, e.stack || e.message, duration, 'ERROR');
+    Logger.log('Sync error: ' + e.message + '\n' + e.stack);
+    try { SpreadsheetApp.getUi().alert('Sync error:\n' + e.message); } catch (uiErr) { /* timer context */ }
+  }
+}
+
+/**
+ * Updates batch detail tab only
+ */
+function syncBatchDetail() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var katanaData = fetchAllKatanaData();
+  var waspData = fetchAllWaspData();
+  var batchData = fetchAllBatchData(katanaData);
+
+  // Katana batch_tracking = source of truth
+  if (katanaData.batchTrackingSkus) {
+    var btSkus = Object.keys(katanaData.batchTrackingSkus);
+    for (var bti = 0; bti < btSkus.length; bti++) {
+      batchData.lotTrackedSkus[btSkus[bti]] = true;
+    }
+  }
+
+  // Augment from WASP lot inventory
+  for (var wi = 0; wi < waspData.items.length; wi++) {
+    if (waspData.items[wi].itemNumber && waspData.items[wi].lot) {
+      batchData.lotTrackedSkus[waspData.items[wi].itemNumber] = true;
+    }
+  }
+
+  writeBatchTab(ss, katanaData, waspData, batchData);
+  try { SpreadsheetApp.getUi().alert('Batch detail updated.'); } catch (uiErr) {}
+}
+
+/**
+ * Creates hourly auto-sync trigger
+ * Business hours (7am-7pm Vancouver) enforced inside runFullSync()
+ */
+function createAutoSyncTrigger() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'runFullSync') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  ScriptApp.newTrigger('runFullSync')
+    .timeBased()
+    .everyHours(1)
+    .create();
+  SpreadsheetApp.getUi().alert('Auto-sync enabled: runs hourly, 7am-7pm Vancouver time.');
+}
+
+/**
+ * Removes all auto-sync triggers
+ */
+function removeAllTriggers() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    var fn = triggers[i].getHandlerFunction();
+    if (fn === 'runFullSync') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  SpreadsheetApp.getUi().alert('Auto-sync stopped.');
+}
+
+/**
+ * Clears all ERROR statuses on Katana tab back to Push (for retry).
+ * Also clears ERROR on Wasp tab (resets to Pending) and Batch tab (resets Sync Status to Pending).
+ * Called from menu "Clear Errors → Push".
+ */
+function clearErrorsToPush() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var cleared = 0;
+
+  // Katana tab: WASP Status ERROR → Push (yellow), Adj Status ERROR → Pending (yellow)
+  var katana = ss.getSheetByName('Katana');
+  if (katana && katana.getLastRow() > 1) {
+    var kData = katana.getRange(2, 1, katana.getLastRow() - 1, 14).getValues();
+    for (var ki = 0; ki < kData.length; ki++) {
+      if (String(kData[ki][11]).trim() === 'ERROR') {
+        var kRow = ki + 2;
+        katana.getRange(kRow, 12).setValue('Push');
+        katana.getRange(kRow, 1, 1, 14).setBackground('#fff8e1');
+        cleared++;
+      }
+      if (String(kData[ki][13]).trim() === 'ERROR') {
+        var kRow2 = ki + 2;
+        katana.getRange(kRow2, 14).setValue('Pending');
+        katana.getRange(kRow2, 1, 1, 14).setBackground('#fff8e1');
+        cleared++;
+      }
+    }
+  }
+
+  // Wasp tab: ERROR → Pending (yellow)
+  var wasp = ss.getSheetByName('Wasp');
+  if (wasp && wasp.getLastRow() > 1) {
+    var wData = wasp.getRange(2, 1, wasp.getLastRow() - 1, 18).getValues();
+    for (var wi = 0; wi < wData.length; wi++) {
+      if (String(wData[wi][15]).trim() === 'ERROR') {
+        var wRow = wi + 2;
+        wasp.getRange(wRow, 16).setValue('Pending');
+        wasp.getRange(wRow, 1, 1, 18).setBackground('#fff8e1');
+        cleared++;
+      }
+    }
+  }
+
+  // Batch tab: ERROR → Pending (yellow)
+  var batch = ss.getSheetByName('Batch');
+  if (batch && batch.getLastRow() > 1) {
+    var bData = batch.getRange(2, 1, batch.getLastRow() - 1, 20).getValues();
+    for (var bi = 0; bi < bData.length; bi++) {
+      if (String(bData[bi][17]).trim() === 'ERROR') {
+        var bRow = bi + 2;
+        batch.getRange(bRow, 18).setValue('Pending');
+        batch.getRange(bRow, 1, 1, 20).setBackground('#fff8e1');
+        cleared++;
+      }
+    }
+  }
+
+  SpreadsheetApp.flush();
+  var msg = cleared > 0 ? 'Cleared ' + cleared + ' ERROR rows. Click "Push to WASP" to retry.' : 'No ERROR rows found.';
+  try { ss.toast(msg, 'Clear Errors', 5); } catch (e) { Logger.log(msg); }
+}
+
+/**
+ * Tests Katana API connection
+ */
+function testKatana() {
+  try {
+    var locations = katanaFetch('/locations');
+    if (locations.data) locations = locations.data;
+    var names = [];
+    for (var i = 0; i < locations.length; i++) { names.push(locations[i].name); }
+    SpreadsheetApp.getUi().alert('Katana OK! Found ' + locations.length + ' locations:\n' + names.join(', '));
+  } catch (e) {
+    SpreadsheetApp.getUi().alert('Katana Error: ' + e.message);
+  }
+}
+
+/**
+ * Tests WASP API connection
+ */
+function testWasp() {
+  try {
+    var result = waspFetch('ic/item/advancedinventorysearch', { PageSize: 1, PageNumber: 1 });
+    SpreadsheetApp.getUi().alert('Wasp OK! Total items: ' + (result.TotalRecordsLongCount || 'unknown'));
+  } catch (e) {
+    SpreadsheetApp.getUi().alert('Wasp Error: ' + e.message);
+  }
+}

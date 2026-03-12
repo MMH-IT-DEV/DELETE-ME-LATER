@@ -1,0 +1,263 @@
+================================================================
+HEARTBEAT INTEGRATION PLAN — Systems Health Tracker
+GMP Compliance | MyMagicHealer IT
+Last updated: 2026-03-02
+================================================================
+
+OVERVIEW
+--------
+Every automation, script, and bot must report its run status to
+the Health Monitor (GAS web app) after each execution.
+
+This enables the Health Monitor to:
+  - Know when each system last ran successfully
+  - Detect silent failures (system stops running, no error raised)
+  - Alert #it-support via Slack when a system goes missing
+  - Maintain a GMP-compliant audit trail of all automation activity
+
+HEALTH MONITOR ENDPOINT
+-----------------------
+  URL:     Stored in each script's Script Properties as HEALTH_MONITOR_URL
+  Method:  POST
+  Format:  JSON
+
+SUCCESS PAYLOAD
+---------------
+  {
+    "system":  "Exact system name matching System Registry",
+    "status":  "success",
+    "details": "Optional — e.g. '3 orders processed', '12 POs synced'"
+  }
+
+ERROR PAYLOAD
+-------------
+  {
+    "system":   "Exact system name matching System Registry",
+    "error":    "Error message here",
+    "severity": "critical | error | warning | info",
+    "context":  { "optional": "extra detail object" }
+  }
+
+================================================================
+STATUS DEFINITIONS (GMP)
+================================================================
+
+  Healthy   = Heartbeat received within threshold AND last run OK
+  Degraded  = Heartbeat overdue OR credential expiring < 30 days
+  Down      = Error payload received OR URL unreachable
+  Unknown   = Never connected OR Google Sheet (no script, manual only)
+
+================================================================
+SYSTEM-BY-SYSTEM INTEGRATION PLAN
+================================================================
+
+────────────────────────────────────────────────────────────────
+[1] Shopify Hold → ShipStation Hold Sync
+    Type:      FLOW
+    Platform:  Shopify
+    GMP:       Yes
+    Owner:     Felippe
+    Threshold: 48 hours
+────────────────────────────────────────────────────────────────
+  Method: Add "Send HTTP Request" action at the END of the flow
+  When:   After each order triggers the flow (success path)
+          Add a second "Send HTTP Request" on the error path
+
+  SUCCESS step config:
+    URL:    [HEALTH_MONITOR_URL from Script Properties]
+    Method: POST
+    Body:   {
+              "system":  "Shopify Hold → ShipStation Hold Sync",
+              "status":  "success",
+              "trigger": "Order #{{order.id}}"
+            }
+
+  ERROR step config:
+    URL:    [same]
+    Method: POST
+    Body:   {
+              "system":   "Shopify Hold → ShipStation Hold Sync",
+              "error":    "Flow failed on Order #{{order.id}}",
+              "severity": "error"
+            }
+
+  Setup status: PENDING — Felippe to add HTTP steps in Shopify Flow editor
+  Location: https://admin.shopify.com/store/mymagichealer/apps/flow
+
+────────────────────────────────────────────────────────────────
+[2] Shopify Hold Release → ShipStation Release
+    Type:      FLOW
+    Platform:  Shopify
+    GMP:       Yes
+    Owner:     Felippe
+    Threshold: 48 hours
+────────────────────────────────────────────────────────────────
+  Same pattern as [1].
+  System name in payload: "Shopify Hold Release → ShipStation Release"
+
+────────────────────────────────────────────────────────────────
+[3] Shopify Cancel → ShipStation Cancel
+    Type:      FLOW
+    Platform:  Shopify
+    GMP:       Yes
+    Owner:     Felippe
+    Threshold: 48 hours
+────────────────────────────────────────────────────────────────
+  Same pattern as [1].
+  System name in payload: "Shopify Cancel → ShipStation Cancel"
+
+────────────────────────────────────────────────────────────────
+[4] Katana → Google Calendar PO Sync
+    Type:      SCRIPT (Google Apps Script)
+    Platform:  Katana
+    GMP:       Yes
+    Owner:     Erik
+    Threshold: 48 hours
+────────────────────────────────────────────────────────────────
+  Method: Add sendHeartbeatToMonitor_() call in GAS script
+  Where:  At the end of the main trigger function (try + catch)
+
+  Script Properties required:
+    HEALTH_MONITOR_URL = [Health Monitor web app URL]
+
+  Code to add (try block — success):
+    sendHeartbeatToMonitor_('Katana → Google Calendar PO Sync',
+                            'success', 'X POs synced');
+
+  Code to add (catch block — error):
+    sendHeartbeatToMonitor_('Katana → Google Calendar PO Sync',
+                            'error', err.message);
+
+  Setup status: READY TO ADD — Erik to push to GAS
+
+────────────────────────────────────────────────────────────────
+[5] QA Escalation Automation
+    Type:      SCRIPT (Google Apps Script)
+    Platform:  Google
+    GMP:       Yes
+    Owner:     Erik
+    Threshold: 48 hours
+────────────────────────────────────────────────────────────────
+  Same pattern as [4].
+  System name in payload: "QA Escalation Automation"
+  Setup status: READY TO ADD — Erik to push to GAS
+
+────────────────────────────────────────────────────────────────
+[6] FedEx Dispute Bot
+    Type:      BOT (GitHub-hosted Python/Node)
+    Platform:  FedEx
+    GMP:       No (operational, not GMP-critical)
+    Owner:     Erik / Felippe
+    Threshold: 192 hours (8 days — runs weekly)
+────────────────────────────────────────────────────────────────
+  Method: Add HTTP POST at end of main bot execution
+  Repo:   https://github.com/MMH-IT-DEV/MMH_FEDEX_DISPUTE_BOT
+
+  Python example:
+    import requests
+    HEALTH_URL = os.environ.get('HEALTH_MONITOR_URL')
+    try:
+        requests.post(HEALTH_URL, json={
+            "system":  "FedEx Dispute Bot",
+            "status":  "success",
+            "details": f"{count} disputes filed"
+        }, timeout=5)
+    except Exception:
+        pass  # never let heartbeat failure break the bot
+
+  Environment variable required:
+    HEALTH_MONITOR_URL = [Health Monitor web app URL]
+
+  Setup status: NEEDS DEV — requires repo access
+
+────────────────────────────────────────────────────────────────
+[7] 2026_Security & Connection Tracker
+    Type:      GOOGLE SHEET
+    Platform:  Google
+    GMP:       Yes
+    Owner:     Erik
+    Threshold: N/A
+────────────────────────────────────────────────────────────────
+  Sheet-only system. No active background process.
+  Status = Healthy (manual). Updated when sheet is reviewed.
+  The it-security-tracker.js already logs daily activity
+  to the Health Monitor's Automation Log tab.
+
+────────────────────────────────────────────────────────────────
+[8] WASP-KATANA-SYNC
+    Type:      GOOGLE SHEET (with GAS sync engine)
+    Platform:  Wasp/Katana
+    GMP:       Yes
+    Owner:     Erik
+    Threshold: 48 hours (runs hourly)
+────────────────────────────────────────────────────────────────
+  The engin-src script runs hourly sync. Heartbeat can be added
+  to runFullSyncCore_() at the end of a successful sync.
+  System name in payload: "WASP-KATANA-SYNC"
+  Setup status: READY TO ADD — Erik to push to engin-src
+
+================================================================
+SHARED HELPER FUNCTION (add to every GAS script)
+================================================================
+
+/**
+ * Sends heartbeat or error to the Health Monitor web app.
+ * URL must be set in Script Properties as HEALTH_MONITOR_URL.
+ * Silent — never throws, never blocks execution.
+ */
+function sendHeartbeatToMonitor_(systemName, status, details) {
+  try {
+    var url = PropertiesService.getScriptProperties()
+                .getProperty('HEALTH_MONITOR_URL');
+    if (!url) return;
+
+    var payload = status === 'success'
+      ? { system: systemName, status: 'success', details: details || '' }
+      : { system: systemName, error: details || 'Unknown error',
+          severity: 'error' };
+
+    UrlFetchApp.fetch(url, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+  } catch (e) {
+    Logger.log('Heartbeat send failed (non-blocking): ' + e.message);
+  }
+}
+
+================================================================
+SLACK ALERT THRESHOLDS
+================================================================
+
+  Type         | Missing heartbeat alert after
+  -------------|------------------------------
+  FLOW         | 48 hours
+  SCRIPT       | 48 hours
+  BOT          | 192 hours (8 days)
+  GOOGLE SHEET | N/A (no heartbeat)
+
+  Credential expiry alerts at: 30 / 14 / 7 / 3 / 1 days
+
+================================================================
+SETUP CHECKLIST
+================================================================
+
+  [ ] Deploy Health Monitor as web app (re-deploy after code changes)
+  [ ] Copy web app URL → set HEALTH_MONITOR_URL in each script's
+      Script Properties
+  [ ] Shopify flows: Felippe adds HTTP steps [x3 flows]
+  [ ] Katana Calendar script: Erik adds sendHeartbeatToMonitor_()
+  [ ] QA Escalation script: Erik adds sendHeartbeatToMonitor_()
+  [ ] WASP-KATANA-SYNC: Erik adds sendHeartbeatToMonitor_()
+  [ ] FedEx Bot: Erik/Felippe adds HTTP POST to repo
+  [ ] Run "Format Registry Sheet" from Health Monitor menu
+      to apply updated XLSX-style format to Google Sheet
+  [ ] Set Webhook Integrated = Yes for each connected system
+  [ ] Run Health Monitor → Setup Daily Trigger (8:30 AM)
+  [ ] Verify Slack alerts arrive in #it-support
+
+================================================================
+END OF PLAN
+================================================================

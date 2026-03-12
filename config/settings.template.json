@@ -1,0 +1,43 @@
+{
+    "katana": {
+        "api_url": "https://api.katanamrp.com/v1",
+        "api_key": "YOUR_KATANA_API_KEY_HERE"
+    },
+    "wasp": {
+        "api_url": "https://mymagichealer.waspinventorycloud.com/public-api",
+        "api_token": "YOUR_WASP_TOKEN_HERE",
+        "default_site": "Warehouse 1",
+        "default_location": "MMH Kelowna"
+    },
+    "sync": {
+        "finished_goods_skus": [
+            "B-COM-QUAD-1OZ",
+            "CAR-1OZ",
+            "CAR-2OZ",
+            "CAR-4OZ",
+            "B-CPT-DUO-4OZ",
+            "VB-CPT-DUO-4OZ",
+            "B-UEOF-DUO-4OZ",
+            "B-MM-4",
+            "VB-UFC-DUO",
+            "B-UFC-TRIO-2OZ",
+            "TTFC-1OZ",
+            "TTFC-2OZ",
+            "TTFC-4OZ",
+            "VB-UHP",
+            "UFC-1OZ",
+            "UFC-2OZ",
+            "UFC-4OZ",
+            "UFC-EOF-1OZ",
+            "UFC-EOF-2OZ",
+            "UFC-EOF-4OZ",
+            "GP-50-W",
+            "MT-1-W",
+            "WH-8OZ-W"
+        ]
+    },
+    "logging": {
+        "log_file": "logs/sync.log",
+        "log_level": "INFO"
+    }
+}

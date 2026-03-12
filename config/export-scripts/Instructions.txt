@@ -1,0 +1,15 @@
+The files in this folder can be used to export your data from the v7 version of the product.
+1.  First you will need to do this from the computer hosting your database. 
+2.  Then you will need to double click on a .sql file to open it in Sql Server Management Studio (SSMS). You will probably be prompted to log in to the database. The default sa password is Wasp$07Wasp$07.
+To enable the column headers to be printed along with the data, which will allow for quick auto-mapping with the default field names, follow the steps below:
+  a. Open SSMS.
+  b. Click Tools > Options.
+  c. In the Options dialog, expand Query Results > SQL Server > Results to Grid, then check “Include column headers when copying or saving the results”
+  d. Click OK.
+  e. Close & restart SSMS
+3.  Now that the file is open you can press the Execute button.
+4.  The results will be displayed in a window typically at the bottom of the application. Right-click in this section and select "Save Results As". You should now see a prompt asking where to save the results. Give the file a meaningful name and remember the location you selected.
+5.  Repeat steps 2, 3, and 4 for the rest of the sql files.
+6.  Once you have run each of the sql files you can then take each exported file and import it into the cloud product.
+
+*If you have items with "Require user to fill out: Reference #, Vendor, or Customer, leave those three columns unmapped when importing Items. After importing Inventory, re-import Item with those three columns mapped so they will be properly required for transactions in the new system.

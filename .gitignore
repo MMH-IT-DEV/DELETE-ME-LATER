@@ -1,0 +1,43 @@
+# Credentials / local config - NEVER COMMIT
+config/settings.json
+config/settings_ufc.json
+config/sheet-scan.json
+config/wasp-token.txt
+**/.clasp.json
+.claude/
+
+# Local artifacts / exports
+state/local-artifacts/
+troubleshoot-*.txt
+shipments log
+dispute activity
+_2026_Katana-Wasp Inventory Sync (2).xlsx
+.git_broken_backup*/
+scripts/katana_tmp.json
+conversions-001
+src/conversions-001
+src/delete me later
+src/handoff_*.txt
+
+# Logs
+logs/
+*.log
+sessions/
+
+# Dependencies
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
