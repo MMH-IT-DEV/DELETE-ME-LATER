@@ -19,7 +19,6 @@ function onOpen() {
     .addSeparator()
     .addItem('Test Katana Connection', 'testKatana')
     .addItem('Test Wasp Connection', 'testWasp')
-    .addItem('Diagnose Wasp Response', 'testWaspDetailed')
     .addToUi();
 }
 
@@ -39,13 +38,13 @@ function onEdit(e) {
   var row = e.range.getRow();
   var col = e.range.getColumn();
 
-  // Katana tab: handle WASP Status (col 12) + WASP Qty edits (col 10) for adjustments
+  // Katana tab: handle WASP Status (col 12) + Qty edits (col 9) for adjustments
   if (sheetName === 'Katana') {
     if (row < 2) return;
     var skuVal = String(sheet.getRange(row, 1).getValue() || '').trim();
     if (skuVal.indexOf(' > ') > -1) return; // separator row
 
-    var NUM_COLS_K = 15;
+    var NUM_COLS_K = 14;
 
     // WASP Status column (col 12): user types "Push" to queue sync
     if (col === 12) {
@@ -497,99 +496,10 @@ function testKatana() {
  * Tests WASP API connection
  */
 function testWasp() {
-  var messages = [];
   try {
-    var inventoryResult = waspFetch('ic/item/advancedinventorysearch', { PageSize: 1, PageNumber: 1 });
-    messages.push('Wasp inventory search OK. Rows: ' + (inventoryResult.TotalRecordsLongCount || 'unknown'));
-  } catch (inventoryErr) {
-    messages.push('Inventory search warning: ' + inventoryErr.message);
+    var result = waspFetch('ic/item/advancedinventorysearch', { PageSize: 1, PageNumber: 1 });
+    SpreadsheetApp.getUi().alert('Wasp OK! Total items: ' + (result.TotalRecordsLongCount || 'unknown'));
+  } catch (e) {
+    SpreadsheetApp.getUi().alert('Wasp Error: ' + e.message);
   }
-
-  var fallbackWorked = false;
-  var fallbackEndpoints = ['ic/item/infosearch', 'ic/item/itemsearch', 'ic/item/detailsearch'];
-  for (var i = 0; i < fallbackEndpoints.length; i++) {
-    try {
-      var fallbackResult = waspFetch(fallbackEndpoints[i], { PageSize: 1, PageNumber: 1 });
-      messages.push('Item endpoint OK: ' + fallbackEndpoints[i] + ' (' + ((fallbackResult.Data || []).length || 0) + ' rows on sample page)');
-      fallbackWorked = true;
-      break;
-    } catch (fallbackErr) {
-      messages.push('Item endpoint failed: ' + fallbackEndpoints[i] + ' — ' + fallbackErr.message);
-    }
-  }
-
-  if (messages.length === 0 || (!fallbackWorked && messages[0].indexOf('OK') === -1)) {
-    SpreadsheetApp.getUi().alert('Wasp Error: ' + messages.join('\n'));
-    return;
-  }
-
-  SpreadsheetApp.getUi().alert(messages.join('\n'));
-}
-
-// Override the legacy health check with the current endpoint fallback order.
-function testWasp() {
-  var messages = [];
-  var inventoryOk = false;
-  var itemOk = false;
-
-  messages.push('Base URL: ' + getWaspBase());
-
-  try {
-    var inventoryProbe = waspProbeFirstSuccessful_(getWaspInventorySearchCandidates_(), { PageSize: 1, PageNumber: 1 });
-    var inventoryResult = inventoryProbe.result;
-    messages.push('Inventory endpoint OK: ' + inventoryProbe.endpoint + ' (rows=' + (inventoryResult.TotalRecordsLongCount || 'unknown') + ')');
-    inventoryOk = true;
-  } catch (inventoryErr) {
-    messages.push('Inventory read failed: ' + inventoryErr.message);
-  }
-
-  try {
-    var itemProbe = waspProbeFirstSuccessful_(['ic/item/infosearch'], { SearchPattern: 'B-PROP', PageSize: 1, PageNumber: 1 });
-    messages.push('Item endpoint OK: ' + itemProbe.endpoint);
-    itemOk = true;
-  } catch (itemErr) {
-    messages.push('Item read failed: ' + itemErr.message);
-  }
-
-  if (!inventoryOk && !itemOk) {
-    SpreadsheetApp.getUi().alert(
-      'Wasp Error: inventory and catalog reads are unavailable right now.\n' +
-      messages.join('\n') +
-      '\nNext checks: verify Script Properties (WASP_BASE_URL or WASP_INSTANCE) and retry when WASP inventory services recover.'
-    );
-    return;
-  }
-
-  SpreadsheetApp.getUi().alert(messages.join('\n'));
-}
-
-function testWaspDetailed() {
-  var ui = SpreadsheetApp.getUi();
-  var messages = [];
-  var endpoints = [
-    { endpoint: 'ic/item/advancedinventorysearch', payload: { PageSize: 1, PageNumber: 1 } },
-    { endpoint: 'ic/item/inventorysearch', payload: { PageSize: 1, PageNumber: 1 } },
-    { endpoint: 'ic/item/infosearch', payload: { SearchPattern: 'B-PROP', PageSize: 1, PageNumber: 1 } }
-  ];
-
-  messages.push('Base URL: ' + getWaspBase());
-  messages.push('Token present: ' + (PropertiesService.getScriptProperties().getProperty('WASP_API_TOKEN') ? 'yes' : 'no'));
-
-  for (var i = 0; i < endpoints.length; i++) {
-    try {
-      var probe = waspInspectEndpoint_(endpoints[i].endpoint, endpoints[i].payload);
-      messages.push('');
-      messages.push('Endpoint: ' + probe.endpoint);
-      messages.push('HTTP: ' + probe.code);
-      messages.push('HTML: ' + (probe.isHtml ? 'yes' : 'no'));
-      if (probe.title) messages.push('Title: ' + probe.title);
-      messages.push('Snippet: ' + probe.snippet);
-    } catch (e) {
-      messages.push('');
-      messages.push('Endpoint: ' + endpoints[i].endpoint);
-      messages.push('Error: ' + e.message);
-    }
-  }
-
-  ui.alert(messages.join('\n'));
 }

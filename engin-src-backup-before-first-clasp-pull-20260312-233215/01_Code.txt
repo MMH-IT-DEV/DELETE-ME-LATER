@@ -8,18 +8,12 @@ function onOpen() {
     .createMenu('Inventory Sync')
     .addItem('Sync Now', 'runFullSync')
     .addItem('Push to WASP', 'pushToWasp')
-    .addItem('Auto-Adjust WASP', 'autoAdjustWasp')
-    .addSeparator()
-    .addItem('Build Reconcile Plan', 'buildSafeReconcilePlan')
-    .addItem('Approve Safe Reconcile', 'approveSafeReconcileActions')
-    .addItem('Execute Reconcile Plan', 'executeSafeReconcilePlan')
     .addSeparator()
     .addItem('Setup Auto Sync (hourly)', 'createAutoSyncTrigger')
     .addItem('Stop Auto Sync', 'removeAllTriggers')
     .addSeparator()
     .addItem('Test Katana Connection', 'testKatana')
     .addItem('Test Wasp Connection', 'testWasp')
-    .addItem('Diagnose Wasp Response', 'testWaspDetailed')
     .addToUi();
 }
 
@@ -39,13 +33,13 @@ function onEdit(e) {
   var row = e.range.getRow();
   var col = e.range.getColumn();
 
-  // Katana tab: handle WASP Status (col 12) + WASP Qty edits (col 10) for adjustments
+  // Katana tab: handle WASP Status (col 12) + Qty edits (col 9) for adjustments
   if (sheetName === 'Katana') {
     if (row < 2) return;
     var skuVal = String(sheet.getRange(row, 1).getValue() || '').trim();
     if (skuVal.indexOf(' > ') > -1) return; // separator row
 
-    var NUM_COLS_K = 15;
+    var NUM_COLS_K = 14;
 
     // WASP Status column (col 12): user types "Push" to queue sync
     if (col === 12) {
@@ -313,9 +307,6 @@ function runFullSyncCore_() {
 
     Logger.log('Full sync complete: ' + details + ', Duration=' + duration.toFixed(1) + 's');
 
-    // Heartbeat — report successful sync to Health Monitor
-    sendHeartbeatToMonitor_('2026_Katana-Wasp Inventory Sync', 'success', details);
-
     // Show toast (menu context only)
     try {
       ss.toast('Sync complete: ' + details, 'Inventory Sync', 5);
@@ -325,34 +316,7 @@ function runFullSyncCore_() {
     var duration = ((new Date()) - startTime) / 1000;
     logSyncHistory(ss, 'SYNC', 'ERROR: ' + e.message, 1, e.stack || e.message, duration, 'ERROR');
     Logger.log('Sync error: ' + e.message + '\n' + e.stack);
-    // Heartbeat — report failure to Health Monitor
-    sendHeartbeatToMonitor_('2026_Katana-Wasp Inventory Sync', 'error', e.message);
     try { SpreadsheetApp.getUi().alert('Sync error:\n' + e.message); } catch (uiErr) { /* timer context */ }
-  }
-}
-
-// ===================== HEALTH MONITOR HEARTBEAT =====================
-
-/**
- * Reports run status to the Systems Health Monitor web app.
- * Requires Script Property: HEALTH_MONITOR_URL
- * Silent — never throws, never blocks the sync.
- */
-function sendHeartbeatToMonitor_(systemName, status, details) {
-  try {
-    var url = PropertiesService.getScriptProperties().getProperty('HEALTH_MONITOR_URL');
-    if (!url) return;
-    var payload = (status === 'success')
-      ? { system: systemName, status: 'success', details: details || '' }
-      : { system: systemName, error: details || 'Unknown error', severity: 'error' };
-    UrlFetchApp.fetch(url, {
-      method: 'post',
-      contentType: 'application/json',
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    });
-  } catch (hbErr) {
-    Logger.log('Heartbeat send failed (non-blocking): ' + hbErr.message);
   }
 }
 
@@ -497,99 +461,10 @@ function testKatana() {
  * Tests WASP API connection
  */
 function testWasp() {
-  var messages = [];
   try {
-    var inventoryResult = waspFetch('ic/item/advancedinventorysearch', { PageSize: 1, PageNumber: 1 });
-    messages.push('Wasp inventory search OK. Rows: ' + (inventoryResult.TotalRecordsLongCount || 'unknown'));
-  } catch (inventoryErr) {
-    messages.push('Inventory search warning: ' + inventoryErr.message);
+    var result = waspFetch('ic/item/advancedinventorysearch', { PageSize: 1, PageNumber: 1 });
+    SpreadsheetApp.getUi().alert('Wasp OK! Total items: ' + (result.TotalRecordsLongCount || 'unknown'));
+  } catch (e) {
+    SpreadsheetApp.getUi().alert('Wasp Error: ' + e.message);
   }
-
-  var fallbackWorked = false;
-  var fallbackEndpoints = ['ic/item/infosearch', 'ic/item/itemsearch', 'ic/item/detailsearch'];
-  for (var i = 0; i < fallbackEndpoints.length; i++) {
-    try {
-      var fallbackResult = waspFetch(fallbackEndpoints[i], { PageSize: 1, PageNumber: 1 });
-      messages.push('Item endpoint OK: ' + fallbackEndpoints[i] + ' (' + ((fallbackResult.Data || []).length || 0) + ' rows on sample page)');
-      fallbackWorked = true;
-      break;
-    } catch (fallbackErr) {
-      messages.push('Item endpoint failed: ' + fallbackEndpoints[i] + ' — ' + fallbackErr.message);
-    }
-  }
-
-  if (messages.length === 0 || (!fallbackWorked && messages[0].indexOf('OK') === -1)) {
-    SpreadsheetApp.getUi().alert('Wasp Error: ' + messages.join('\n'));
-    return;
-  }
-
-  SpreadsheetApp.getUi().alert(messages.join('\n'));
-}
-
-// Override the legacy health check with the current endpoint fallback order.
-function testWasp() {
-  var messages = [];
-  var inventoryOk = false;
-  var itemOk = false;
-
-  messages.push('Base URL: ' + getWaspBase());
-
-  try {
-    var inventoryProbe = waspProbeFirstSuccessful_(getWaspInventorySearchCandidates_(), { PageSize: 1, PageNumber: 1 });
-    var inventoryResult = inventoryProbe.result;
-    messages.push('Inventory endpoint OK: ' + inventoryProbe.endpoint + ' (rows=' + (inventoryResult.TotalRecordsLongCount || 'unknown') + ')');
-    inventoryOk = true;
-  } catch (inventoryErr) {
-    messages.push('Inventory read failed: ' + inventoryErr.message);
-  }
-
-  try {
-    var itemProbe = waspProbeFirstSuccessful_(['ic/item/infosearch'], { SearchPattern: 'B-PROP', PageSize: 1, PageNumber: 1 });
-    messages.push('Item endpoint OK: ' + itemProbe.endpoint);
-    itemOk = true;
-  } catch (itemErr) {
-    messages.push('Item read failed: ' + itemErr.message);
-  }
-
-  if (!inventoryOk && !itemOk) {
-    SpreadsheetApp.getUi().alert(
-      'Wasp Error: inventory and catalog reads are unavailable right now.\n' +
-      messages.join('\n') +
-      '\nNext checks: verify Script Properties (WASP_BASE_URL or WASP_INSTANCE) and retry when WASP inventory services recover.'
-    );
-    return;
-  }
-
-  SpreadsheetApp.getUi().alert(messages.join('\n'));
-}
-
-function testWaspDetailed() {
-  var ui = SpreadsheetApp.getUi();
-  var messages = [];
-  var endpoints = [
-    { endpoint: 'ic/item/advancedinventorysearch', payload: { PageSize: 1, PageNumber: 1 } },
-    { endpoint: 'ic/item/inventorysearch', payload: { PageSize: 1, PageNumber: 1 } },
-    { endpoint: 'ic/item/infosearch', payload: { SearchPattern: 'B-PROP', PageSize: 1, PageNumber: 1 } }
-  ];
-
-  messages.push('Base URL: ' + getWaspBase());
-  messages.push('Token present: ' + (PropertiesService.getScriptProperties().getProperty('WASP_API_TOKEN') ? 'yes' : 'no'));
-
-  for (var i = 0; i < endpoints.length; i++) {
-    try {
-      var probe = waspInspectEndpoint_(endpoints[i].endpoint, endpoints[i].payload);
-      messages.push('');
-      messages.push('Endpoint: ' + probe.endpoint);
-      messages.push('HTTP: ' + probe.code);
-      messages.push('HTML: ' + (probe.isHtml ? 'yes' : 'no'));
-      if (probe.title) messages.push('Title: ' + probe.title);
-      messages.push('Snippet: ' + probe.snippet);
-    } catch (e) {
-      messages.push('');
-      messages.push('Endpoint: ' + endpoints[i].endpoint);
-      messages.push('Error: ' + e.message);
-    }
-  }
-
-  ui.alert(messages.join('\n'));
 }

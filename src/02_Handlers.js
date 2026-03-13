@@ -394,16 +394,20 @@ function handlePurchaseOrderReceived(payload) {
         action: itemOk ? ('→ ' + (res.location || waspDest.location) + (res.lot ? '  lot:' + res.lot : '') + (res.expiry ? '  exp:' + res.expiry : '') + (res.puomNote ? '  (' + res.puomNote + ')' : '')) : '',
         qtyColor: 'green'
       });
+      f1SubItems[f1SubItems.length - 1].action = joinActivitySegments_([
+        buildActivityActionText_('receive into ' + getActivityDisplayLocation_(res.location || waspDest.location), res.lot, res.expiry),
+        res.puomNote ? '(' + res.puomNote + ')' : ''
+      ]);
     }
   }
   var f1Status = f1Fail === 0 ? 'success' : f1Success === 0 ? 'failed' : 'partial';
-  var poRef = poData.order_no || ('PO-' + poId);
+  var poRef = extractCanonicalActivityRef_(poData.order_no, 'PO-', poId);
 
   // Build location summary for logging (handles mixed destinations)
   var f1LocMap = {};
   for (var lr = 0; lr < results.length; lr++) {
     var rl = results[lr].location || waspDest.location;
-    f1LocMap[rl] = true;
+    f1LocMap[getActivityDisplayLocation_(rl)] = true;
   }
   var f1LocKeys = Object.keys(f1LocMap);
   var f1LocSummary = f1LocKeys.join(', ') + ' @ ' + waspDest.site;
@@ -416,6 +420,11 @@ function handlePurchaseOrderReceived(payload) {
     f1Detail = poRefLabel + '  ' + results.length + ' items';
     if (f1Fail > 0) f1Detail += '  ' + f1Fail + ' error' + (f1Fail > 1 ? 's' : '');
   }
+  f1Detail = joinActivitySegments_([
+    poRef,
+    buildActivityCountSummary_(results.length, 'line', 'lines', 'received')
+  ]);
+  poRefLabel = poRef;
   var f1ExecId = logActivity('F1', f1Detail, f1Status, '→ ' + f1LocSummary, f1SubItems.length > 0 ? f1SubItems : null, {
     text: poRefLabel,
     url: getKatanaWebUrl('po', poId)
@@ -755,12 +764,13 @@ function handlePurchaseOrderUpdated(payload) {
       action: (ra_item.lot ? 'lot:' + ra_item.lot + '  ' : '') + (ra_item.expiry ? 'exp:' + ra_item.expiry + '  ' : '') + '← ' + ra_item.location,
       qtyColor: 'red'
     });
+    rvSubItems[rvSubItems.length - 1].action = buildActivityActionText_('remove from ' + getActivityDisplayLocation_(ra_item.location), ra_item.lot, ra_item.expiry);
   }
   var rvStatus = rvFail === 0 ? 'reverted' : rvSuccess === 0 ? 'failed' : 'partial';
-  var rvDetail = poRef + '  ' + (reverted.length === 1
-    ? reverted[0].sku + ' x' + reverted[0].qty + ' reverted'
-    : reverted.length + ' items reverted');
-  if (rvFail > 0) rvDetail += '  ' + rvFail + ' error' + (rvFail > 1 ? 's' : '');
+  var rvDetail = joinActivitySegments_([
+    extractCanonicalActivityRef_(poRef, 'PO-', poId),
+    buildActivityCountSummary_(reverted.length, 'line', 'lines', 'reverted')
+  ]);
 
   logActivity('F1', rvDetail, rvStatus, 'Revert → ' + waspDest.site, rvSubItems, {
     text: poRef,
@@ -1250,7 +1260,9 @@ function handleSalesOrderDelivered(payload) {
     var dRes = results[d];
     var dOk = dRes.result && dRes.result.success;
     if (dOk) sdSuccess++; else sdFail++;
-    var actionText = dOk ? (dRes.isF6 ? (removeLocation + ' \u2192 ' + FLOWS.AMAZON_FBA_WASP_LOCATION) : removeLocation) : '';
+    var actionText = dRes.isF6
+      ? buildActivityActionText_('stage into ' + getActivityDisplayLocation_(FLOWS.AMAZON_FBA_WASP_LOCATION), dRes.lot, dRes.expiry)
+      : buildActivityActionText_('deduct for shipment', dRes.lot, dRes.expiry);
     var itemError = '';
     if (!dOk) {
       if (dRes.isF6) {
@@ -1267,24 +1279,23 @@ function handleSalesOrderDelivered(payload) {
       qty: dRes.quantity,
       uom: dRes.uom || '',
       success: dOk,
-      status: dRes.skipped ? 'Picked' : (dOk ? 'Complete' : 'Failed'),
+      status: dRes.skipped ? 'Skipped' : (dOk ? (dRes.isF6 ? 'Complete' : 'Deducted') : 'Failed'),
       error: itemError,
       action: actionText,
-      qtyColor: dRes.isF6 ? 'orange' : 'red'
+      qtyColor: dRes.isF6 ? 'green' : 'red'
     });
   }
   var sdStatus = sdFail === 0 ? 'success' : sdSuccess === 0 ? 'failed' : 'partial';
-  var sdDetail;
-  if (results.length === 1) {
-    sdDetail = soRef + '  ' + results[0].sku + ' x' + results[0].quantity;
-    if (sdFail > 0 && sdSubItems[0] && sdSubItems[0].error) sdDetail += '  ' + sdSubItems[0].error;
-  } else {
-    sdDetail = soRef + '  ' + results.length + ' items';
-    if (sdFail > 0) sdDetail += '  ' + sdFail + ' error' + (sdFail > 1 ? 's' : '');
-  }
-  var sdLocationLabel = isF6 ? (removeLocation + ' \u2192 ' + FLOWS.AMAZON_FBA_WASP_LOCATION) : removeLocation;
-  var sdExecId = logActivity(flowLabel, sdDetail, sdStatus, '\u2192 ' + sdLocationLabel, (isF6 || sdSubItems.length > 1) ? sdSubItems : null, {
-    text: soRef,
+  var soRefToken = extractCanonicalActivityRef_(soRef, 'SO-', soId);
+  var sdDetail = joinActivitySegments_([
+    soRefToken,
+    isF6
+      ? buildActivityCountSummary_(results.length, 'line', 'lines', 'staged')
+      : buildActivityCountSummary_(results.length, 'line', 'lines', 'shipped')
+  ]);
+  var sdLocationLabel = isF6 ? getActivityDisplayLocation_(FLOWS.AMAZON_FBA_WASP_LOCATION) : getActivityDisplayLocation_(removeLocation);
+  var sdExecId = logActivity(flowLabel, sdDetail, sdStatus, '-> ' + sdLocationLabel, (isF6 || sdSubItems.length > 1) ? sdSubItems : null, {
+    text: soRefToken,
     url: getKatanaWebUrl('so', soId)
   });
 
@@ -2554,35 +2565,30 @@ function handleManufacturingOrderDone(payload) {
     var ingErrorMsg = '';
 
     if (ing.skippedRetry) {
-      ingAction = FLOWS.MO_INGREDIENT_LOCATION;
-      if (ing.lot) ingAction += '  lot:' + ing.lot;
-      if (ing.expiry) ingAction += '  exp:' + normalizeBusinessDate_(ing.expiry);
-      ingStatus = 'Skip-OK';
+      ingAction = buildActivityActionText_('consume from ' + getActivityDisplayLocation_(FLOWS.MO_INGREDIENT_LOCATION), ing.lot, ing.expiry);
+      ingStatus = 'Skipped';
       ingErrorMsg = 'Already consumed';
     } else if (isStrictBatchSkip) {
-      ingAction = FLOWS.MO_INGREDIENT_LOCATION;
-      if (!ing.lot && ing.batchId) ingAction += '  batch_id:' + ing.batchId;
-      if (ing.lot) ingAction += '  lot:' + ing.lot;
-      if (ing.expiry) ingAction += '  exp:' + normalizeBusinessDate_(ing.expiry);
+      ingAction = joinActivitySegments_([
+        'consume from ' + getActivityDisplayLocation_(FLOWS.MO_INGREDIENT_LOCATION),
+        ing.batchId && !ing.lot ? 'batch_id:' + ing.batchId : '',
+        buildActivityBatchMeta_(ing.lot, ing.expiry)
+      ]);
       ingStatus = 'Skipped';
       ingErrorMsg = ing.strictBatchSkipReason || 'Exact Katana lot skipped';
     } else if (isBatchMismatchSkip) {
-      ingAction = FLOWS.MO_INGREDIENT_LOCATION;
+      ingAction = 'consume from ' + getActivityDisplayLocation_(FLOWS.MO_INGREDIENT_LOCATION);
       ingStatus = 'Skipped';
       ingErrorMsg = 'Batch mismatch (stale lot)';
     } else if (isInsufficientQty) {
-      ingAction = FLOWS.MO_INGREDIENT_LOCATION;
-      if (ing.lot) ingAction += '  lot:' + ing.lot;
-      if (ing.expiry) ingAction += '  exp:' + normalizeBusinessDate_(ing.expiry);
+      ingAction = buildActivityActionText_('consume from ' + getActivityDisplayLocation_(FLOWS.MO_INGREDIENT_LOCATION), ing.lot, ing.expiry);
       ingStatus = 'Skipped';
       ingErrorMsg = 'Not enough in ' + FLOWS.MO_INGREDIENT_LOCATION;
     } else if (ingOk) {
-      ingAction = FLOWS.MO_INGREDIENT_LOCATION;
-      if (ing.lot) ingAction += '  lot:' + ing.lot;
-      if (ing.expiry) ingAction += '  exp:' + normalizeBusinessDate_(ing.expiry);
+      ingAction = buildActivityActionText_('consume from ' + getActivityDisplayLocation_(FLOWS.MO_INGREDIENT_LOCATION), ing.lot, ing.expiry);
       ingStatus = 'Consumed';
     } else {
-      ingAction = FLOWS.MO_INGREDIENT_LOCATION;
+      ingAction = buildActivityActionText_('consume from ' + getActivityDisplayLocation_(FLOWS.MO_INGREDIENT_LOCATION), ing.lot, ing.expiry);
       ingStatus = 'Failed';
       if (ing.result) {
         ingErrorMsg = ing.result.error || (ing.result.response ? parseWaspError(ing.result.response, 'Remove', ing.sku, FLOWS.MO_INGREDIENT_LOCATION) : '');
@@ -2608,7 +2614,7 @@ function handleManufacturingOrderDone(payload) {
           success: true,
           status: '',
           error: '',
-          action: FLOWS.MO_INGREDIENT_LOCATION,
+          action: getActivityDisplayLocation_(FLOWS.MO_INGREDIENT_LOCATION),
           qtyColor: 'grey',
           isParent: true,
           batchCount: batchCount
@@ -2660,11 +2666,7 @@ function handleManufacturingOrderDone(payload) {
     var outLocation = results.outputAdded.location || outputLocation;
     if (outOk) f4Success++; else f4Fail++;
     var outError = '';
-    var outAction = outLocation;
-    if (outOk) {
-      if (outLot) outAction += '  lot:' + outLot;
-      if (outExpiry) outAction += '  exp:' + normalizeBusinessDate_(outExpiry);
-    }
+    var outAction = buildActivityActionText_('produce into ' + getActivityDisplayLocation_(outLocation), outLot, outExpiry);
     if (outSkipOk) {
       outError = 'Already produced';
     } else if (!outOk && results.outputAdded) {
@@ -2675,18 +2677,17 @@ function handleManufacturingOrderDone(payload) {
       qty: outputQuantity,
       uom: outputUom,
       success: outOk,
-      status: outOk ? (outSkipOk ? 'Skip-OK' : 'Produced') : 'Failed',
+      status: outOk ? (outSkipOk ? 'Skipped' : 'Produced') : 'Failed',
       error: outError,
-      action: outOk ? outAction : '',
+      action: outAction,
       qtyColor: 'green'
     });
   }
 
   var f4Status = (f4Fail === 0 && f4Skip === 0) ? 'success' : (f4Success === 0 ? 'failed' : 'partial');
-  var moRef = mo.order_no || ('MO-' + moId);
-  var f4Detail = moRef + '  ' + outputSku + ' x' + outputQuantity;
-  if (f4Fail > 0) f4Detail += '  ' + f4Fail + ' error' + (f4Fail > 1 ? 's' : '');
-  if (lotNumber) f4Detail += '  ' + lotNumber;
+  var moRef = extractCanonicalActivityRef_(mo.order_no, 'MO-', moId);
+  var f4Detail = joinActivitySegments_([moRef, outputSku + ' x' + outputQuantity]);
+  outputLocation = getActivityDisplayLocation_(outputLocation);
   var f4ExecId = logActivity('F4', f4Detail, f4Status, '→ ' + outputLocation, f4SubItems, {
     text: moRef,
     url: getKatanaWebUrl('mo', moId)
@@ -3252,6 +3253,13 @@ function reverseMOSnapshot(moId, moRef, snapshotStr, trigger) {
     var rrOk = rr.result && rr.result.success;
     var rrIsAdd = (rr.action === 'add_ingredient');
     var rrLoc = rrIsAdd ? FLOWS.MO_INGREDIENT_LOCATION : (output ? output.location : FLOWS.MO_OUTPUT_LOCATION);
+    var rrCanonicalAction = buildActivityActionText_(
+      rrIsAdd
+        ? ('restore to ' + getActivityDisplayLocation_(rrLoc))
+        : ('remove from ' + getActivityDisplayLocation_(rrLoc)),
+      rr.lot,
+      rr.expiry
+    );
     var rrAction = rrIsAdd ? ('→ ' + rrLoc) : ('← ' + rrLoc);
     if (rr.lot) rrAction += '  lot:' + rr.lot;
     revSubItems.push({
@@ -3261,19 +3269,22 @@ function reverseMOSnapshot(moId, moRef, snapshotStr, trigger) {
       success: rrOk,
       status: rrOk ? (rrIsAdd ? 'Restored' : 'Removed') : 'Failed',
       error: rrOk ? '' : (rr.result ? (rr.result.error || parseWaspError(rr.result.response, rrIsAdd ? 'Add' : 'Remove', rr.sku)) : ''),
-      action: rrOk ? rrAction : '',
+      action: rrCanonicalAction,
       qtyColor: rrIsAdd ? 'green' : 'red'
     });
   }
 
   var revStatus = revFail === 0 ? 'reverted' : revSuccess === 0 ? 'failed' : 'partial';
   // Clean trigger: "status_change:NOT_STARTED" → "Not Started", "deleted" → "deleted"
-  var cleanTrigger = (trigger || '').replace(/^status_change:/, '').toLowerCase().replace(/_/g, ' ');
-  var revDetail = moRef + '  reverted (' + cleanTrigger + ')';
-  if (ingredients.length > 0) revDetail += '  ' + ingredients.length + ' ingredient' + (ingredients.length !== 1 ? 's' : '') + ' restored';
-  if (revFail > 0) revDetail += '  ' + revFail + ' error' + (revFail > 1 ? 's' : '');
+  moRef = extractCanonicalActivityRef_(moRef, 'MO-', moId || snapshot.moId || '');
+  var revDetail = joinActivitySegments_([
+    moRef,
+    ingredients.length > 0
+      ? buildActivityCountSummary_(ingredients.length, 'ingredient', 'ingredients', 'restored')
+      : buildActivityCountSummary_(revSubItems.length, 'line', 'lines', 'reversed')
+  ]);
 
-  logActivity('F4', revDetail, revStatus, '', revSubItems, {
+  logActivity('F4', revDetail, revStatus, '<- ' + getActivityDisplayLocation_(FLOWS.MO_INGREDIENT_LOCATION), revSubItems, {
     text: moRef,
     url: getKatanaWebUrl('mo', moId || snapshot.moId || '')
   });
@@ -3356,13 +3367,18 @@ function handleSADeleted(payload) {
 
   var revOk = reverseResult && reverseResult.success;
   var revStatus = revOk ? 'reverted' : 'failed';
-  var revDetail = 'SA ' + saId + '  reverted (' + (originalAction === 'add' ? 'add undone' : 'remove undone') + ')';
+  var saRef = 'SA-' + saId;
+  var revDetail = joinActivitySegments_([saRef, buildActivityCountSummary_(1, 'adjustment', 'adjustments', 'reversed')]);
 
-  var subItemAction = location;
-  if (lot) subItemAction += '  lot:' + lot;
-  if (expiry) subItemAction += '  exp:' + expiry;
+  var subItemAction = buildActivityActionText_(
+    reverseAction === 'add'
+      ? ('restore to ' + getActivityDisplayLocation_(location))
+      : ('remove from ' + getActivityDisplayLocation_(location)),
+    lot,
+    expiry
+  );
 
-  logActivity('F2', revDetail, revStatus, '', [{
+  logActivity('F2', revDetail, revStatus, '<- ' + getActivityDisplayLocation_(location) + ' @ ' + site, [{
     sku: sku,
     qty: qty,
     uom: uom || '',
@@ -3371,7 +3387,7 @@ function handleSADeleted(payload) {
     error: revOk ? '' : (reverseResult && reverseResult.response ? parseWaspError(reverseResult.response, reverseAction === 'add' ? 'Add' : 'Remove', sku) : ''),
     action: subItemAction,
     qtyColor: reverseAction === 'add' ? 'green' : 'red'
-  }]);
+  }], { text: saRef, url: getKatanaWebUrl('sa', saId) });
 
   return {
     status: revStatus,
@@ -3747,23 +3763,20 @@ function handleSalesOrderF6Revert(soId, f6StoredJson) {
       success: res.ok,
       status: res.ok ? 'Reverted' : 'Failed',
       error: rError,
-      action: res.ok ? rLocationLabel : '',
+      action: buildActivityActionText_('restore to ' + getActivityDisplayLocation_(FLOWS.AMAZON_TRANSFER_LOCATION), res.lot, res.expiry),
       qtyColor: 'green'
     });
   }
 
   var rStatus = rFail === 0 ? 'reverted' : rSuccess === 0 ? 'failed' : 'partial';
-  var rDetail;
-  if (results.length === 1) {
-    rDetail = orderNo + '  REVERTED  ' + results[0].sku + ' x' + results[0].qty;
-    if (rFail > 0 && rSubItems[0] && rSubItems[0].error) rDetail += '  ' + rSubItems[0].error;
-  } else {
-    rDetail = orderNo + '  REVERTED  ' + results.length + ' items';
-    if (rFail > 0) rDetail += '  ' + rFail + ' error' + (rFail > 1 ? 's' : '');
-  }
+  var rRef = extractCanonicalActivityRef_(orderNo, 'SO-', soId);
+  var rDetail = joinActivitySegments_([
+    rRef,
+    buildActivityCountSummary_(results.length, 'line', 'lines', 'reversed')
+  ]);
 
-  logActivity('F6', rDetail, rStatus, '\u2192 ' + rLocationLabel, rSubItems, {
-    text: orderNo,
+  logActivity('F6', rDetail, rStatus, '<- ' + getActivityDisplayLocation_(FLOWS.AMAZON_TRANSFER_LOCATION), rSubItems, {
+    text: rRef,
     url: getKatanaWebUrl('so', soId)
   });
 

@@ -8,7 +8,6 @@
 // -------------------------------------------------------
 var KATANA_LOCATION_COLORS = {
   'MMH Kelowna':        '#1565c0',
-  'MMH Mayfair':        '#2e7d32',
   'Shopify':            '#00897b',
   'Storage Warehouse':  '#6a1b9a'
 };
@@ -27,10 +26,6 @@ var WASP_LOCATION_COLORS = {
   'MMH Kelowna|QA-Hold-2':      '#880e4f',
   'MMH Kelowna|QA-Hold-4':      '#880e4f',
   'MMH Kelowna|QA-Hold-5':      '#880e4f',
-  'MMH Mayfair|QA-Hold-1':      '#6a1b9a',
-  'MMH Mayfair|QA-Hold-2':      '#6a1b9a',
-  'MMH Mayfair|QA-Hold-4':      '#6a1b9a',
-  'MMH Mayfair|QA-Hold-5':      '#6a1b9a',
   'Storage Warehouse|SW-STORAGE': '#6a1b9a'
 };
 
@@ -91,23 +86,23 @@ function buildAllWaspLocations_() {
   locs.push({ site: 'MMH Kelowna',       location: 'SHOPIFY' });
   locs.push({ site: 'MMH Kelowna',       location: 'SW-RECEIVING' });
   locs.push({ site: 'MMH Kelowna',       location: 'UNSORTED' });
-  locs.push({ site: 'MMH Mayfair',      location: 'QA-Hold-1' });
-  locs.push({ site: 'MMH Mayfair',      location: 'QA-Hold-2' });
-  locs.push({ site: 'MMH Mayfair',      location: 'QA-Hold-4' });
-  locs.push({ site: 'MMH Mayfair',      location: 'QA-Hold-5' });
-  var mayfairAisles = [
+  locs.push({ site: 'MMH Kelowna',       location: 'QA-Hold-1' });
+  locs.push({ site: 'MMH Kelowna',       location: 'QA-Hold-2' });
+  locs.push({ site: 'MMH Kelowna',       location: 'QA-Hold-4' });
+  locs.push({ site: 'MMH Kelowna',       location: 'QA-Hold-5' });
+  var aisleDefs = [
     { letter: 'A', count: 14 },
     { letter: 'B', count: 33 },
     { letter: 'C', count: 32 },
-    { letter: 'D', count: 13 },
-    { letter: 'E', count: 23 },
-    { letter: 'F', count: 5 }
+    { letter: 'D', count: 24 },
+    { letter: 'E', count: 24 },
+    { letter: 'F', count: 21 }
   ];
-  for (var mai = 0; mai < mayfairAisles.length; mai++) {
-    var mayfairAisle = mayfairAisles[mai];
-    for (var mn = 1; mn <= mayfairAisle.count; mn++) {
-      var mayfairPad = mn < 10 ? '0' + mn : String(mn);
-      locs.push({ site: 'MMH Mayfair', location: mayfairAisle.letter + '-' + mayfairPad });
+  for (var ai = 0; ai < aisleDefs.length; ai++) {
+    var aisle = aisleDefs[ai];
+    for (var n = 1; n <= aisle.count; n++) {
+      var pad = n < 10 ? '0' + n : String(n);
+      locs.push({ site: 'MMH Kelowna', location: aisle.letter + '-' + pad });
     }
   }
   locs.push({ site: 'Storage Warehouse', location: 'SW-STORAGE' });
@@ -168,52 +163,6 @@ function buildTotalBySku_(items, skuField, qtyField) {
 }
 
 
-// Returns "purchaseUom → stockUom" when a conversion exists, otherwise just stockUom.
-function formatUomDisplay_(stockUom, purchaseUom) {
-  if (purchaseUom && purchaseUom !== stockUom) return purchaseUom + ' \u2192 ' + stockUom;
-  return stockUom || '';
-}
-
-// Returns note text like "1kg = 1000g" — no spaces between number and unit.
-function formatUomNote_(purchaseUom, conversionRate, stockUom) {
-  if (!purchaseUom || purchaseUom === stockUom) return '';
-  if (conversionRate) return '1' + purchaseUom + ' = ' + conversionRate + stockUom;
-  return '1' + purchaseUom + ' = ?' + stockUom;
-}
-
-// -------------------------------------------------------
-// UOM NORMALIZATION
-// Maps variant UOM strings to a canonical form for comparison.
-// PC, PCS, pcs, Each, ea → 'ea'; g, grams → 'g'; kg, KG → 'kg'; etc.
-// -------------------------------------------------------
-var UOM_CANONICAL = {
-  'pc': 'ea',  'pcs': 'ea', 'PCS': 'ea', 'PC': 'ea', 'Pc': 'ea', 'Pcs': 'ea',
-  'ea': 'ea',  'EA': 'ea',  'each': 'ea', 'Each': 'ea', 'EACH': 'ea',
-  'g': 'g',    'gram': 'g', 'grams': 'g', 'Gram': 'g', 'Grams': 'g', 'GRAMS': 'g',
-  'kg': 'kg',  'KG': 'kg',  'Kg': 'kg',
-  'lbs': 'lbs','lb': 'lbs', 'LBS': 'lbs','Lbs': 'lbs','LB': 'lbs',
-  'oz': 'oz',  'OZ': 'oz',
-  'dozen': 'dozen','doz': 'dozen','Dozen': 'dozen','DOZ': 'dozen',
-  'pack': 'pack','Pack': 'pack','PACK': 'pack',
-  'ml': 'ml',  'mL': 'ml',  'ML': 'ml',
-  'l': 'l',    'L': 'l',    'liter': 'l','litre': 'l',
-  'box': 'box','Box': 'box','BOX': 'box',
-  'bag': 'bag','Bag': 'bag','BAG': 'bag',
-  'roll': 'roll','Roll': 'roll','ROLL': 'roll'
-};
-
-function normalizeUom_(uom) {
-  if (!uom) return '';
-  var s = String(uom).trim();
-  return UOM_CANONICAL[s] || s.toLowerCase();
-}
-
-// Returns true if two UOM strings are semantically equivalent after normalization.
-function uomsMatch_(uom1, uom2) {
-  if (!uom1 && !uom2) return true;
-  return normalizeUom_(uom1) === normalizeUom_(uom2);
-}
-
 // Filter WASP items to remove aggregate (no-lot) rows for SKUs that have
 // per-lot rows. Prevents double-counting in buildTotalBySku_.
 function filterWaspItemsForTotals_(waspItems) {
@@ -250,50 +199,6 @@ function computeCrossMatch_(sku, katanaTotals, waspTotals, source) {
   // Both exist - compare
   if (Math.abs(kTotal - wTotal) < 0.01) return 'MATCH';
   return 'MISMATCH';
-}
-
-function getKatanaTargetSiteLocation_(katanaLoc) {
-  var loc = String(katanaLoc || '').trim();
-  if (loc === 'Storage Warehouse') {
-    return { site: 'Storage Warehouse', location: 'SW-STORAGE' };
-  }
-  if (loc === 'MMH Mayfair') {
-    return { site: 'MMH Mayfair', location: 'QA-Hold-1' };
-  }
-  if (loc === 'MMH Kelowna') {
-    return { site: 'MMH Kelowna', location: 'MMH Kelowna' };
-  }
-  return {
-    site: 'MMH Kelowna',
-    location: loc || 'MMH Kelowna'
-  };
-}
-
-function computeKatanaTargetMatch_(row, waspBySkuLotSiteLoc, waspBySkuSiteLoc, waspTotals) {
-  var target = getKatanaTargetSiteLocation_(row.location);
-  var kQty = Math.round((parseFloat(row.qty) || 0) * 100) / 100;
-  var wQty = 0;
-  var hasWasp = false;
-
-  if (row.batch) {
-    var lotKey = row.sku + '|' + row.batch + '|' + target.site + '|' + target.location;
-    hasWasp = waspBySkuLotSiteLoc.hasOwnProperty(lotKey);
-    wQty = Math.round((waspBySkuLotSiteLoc[lotKey] || 0) * 100) / 100;
-  } else {
-    var siteLocKey = row.sku + '|' + target.site + '|' + target.location;
-    hasWasp = waspBySkuSiteLoc.hasOwnProperty(siteLocKey);
-    wQty = Math.round((waspBySkuSiteLoc[siteLocKey] || 0) * 100) / 100;
-  }
-
-  if (!hasWasp) {
-    if (!waspTotals.hasOwnProperty(row.sku)) return { match: 'KATANA ONLY', qty: '' };
-    if (kQty === 0) return { match: 'ZERO', qty: '' };
-    return { match: 'KATANA ONLY', qty: '' };
-  }
-
-  if (kQty === 0 && wQty === 0) return { match: 'ZERO', qty: wQty };
-  if (Math.abs(kQty - wQty) < 0.01) return { match: 'MATCH', qty: wQty };
-  return { match: 'MISMATCH', qty: wQty };
 }
 
 // Per-row match: lot rows compare per-lot, non-lot rows compare per-site
@@ -366,7 +271,7 @@ function writeKatanaTab(ss, katanaData, batchData, waspData) {
 
   // Preserve Push status BEFORE clearing sheet
   var NUM_COLS = 15;
-  var preserveMap = {};  // sku|location|batch -> 'Push'
+  var preserveMap = {};  // sku -> 'Push'
   // Also preserve Adj Status pending rows
   var adjPendingMap = {};  // key -> { qty, origQty }
   if (sheet.getLastRow() > 1) {
@@ -374,10 +279,8 @@ function writeKatanaTab(ss, katanaData, batchData, waspData) {
     for (var ei = 0; ei < existingData.length; ei++) {
       var eSku = String(existingData[ei][0]).trim();
       var eStatus = String(existingData[ei][11]).trim().toUpperCase();
-      var eLocStatus = String(existingData[ei][2]).trim();
-      var eBatchStatus = String(existingData[ei][5]).trim();
       if (eSku && eStatus === 'PUSH') {
-        preserveMap[eSku + '|' + eLocStatus + '|' + eBatchStatus] = 'Push';
+        preserveMap[eSku] = 'Push';
       }
       var eAdjStatus = String(existingData[ei][13]).trim();
       if (eSku && (eAdjStatus === 'Pending' || eAdjStatus === 'ERROR')) {
@@ -418,7 +321,6 @@ function writeKatanaTab(ss, katanaData, batchData, waspData) {
 
   // Per-lot lookup: SKU|lot -> total WASP qty across all locations
   var waspBySkuLot = {};
-  var waspBySkuLotSiteLoc = {};
   if (waspData && waspData.items) {
     for (var wl = 0; wl < waspData.items.length; wl++) {
       var wItem = waspData.items[wl];
@@ -426,38 +328,20 @@ function writeKatanaTab(ss, katanaData, batchData, waspData) {
         var wlKey = wItem.itemNumber + '|' + wItem.lot;
         if (!waspBySkuLot[wlKey]) waspBySkuLot[wlKey] = 0;
         waspBySkuLot[wlKey] += (parseFloat(wItem.qtyAvailable) || 0);
-        var wlSiteLocKey = wItem.itemNumber + '|' + wItem.lot + '|' + (wItem.siteName || 'MMH Kelowna') + '|' + (wItem.locationCode || '');
-        if (!waspBySkuLotSiteLoc[wlSiteLocKey]) waspBySkuLotSiteLoc[wlSiteLocKey] = 0;
-        waspBySkuLotSiteLoc[wlSiteLocKey] += (parseFloat(wItem.qtyAvailable) || 0);
       }
     }
   }
 
   // Per-site lookup: SKU|siteName -> total WASP qty at that site (for non-lot comparison)
   var waspBySkuSite = {};
-  var waspBySkuSiteLoc = {};
   if (waspData && waspData.items) {
     var filteredForSite = filterWaspItemsForTotals_(waspData.items);
     for (var ws2 = 0; ws2 < filteredForSite.length; ws2++) {
       var wsItem = filteredForSite[ws2];
       if (wsItem.itemNumber) {
-        var wsKey = wsItem.itemNumber + '|' + (wsItem.siteName || WASP_DEFAULT_SITE || 'MMH Kelowna');
+        var wsKey = wsItem.itemNumber + '|' + (wsItem.siteName || 'MMH Kelowna');
         if (!waspBySkuSite[wsKey]) waspBySkuSite[wsKey] = 0;
         waspBySkuSite[wsKey] += (parseFloat(wsItem.qtyAvailable) || 0);
-        var wsSiteLocKey = wsItem.itemNumber + '|' + (wsItem.siteName || WASP_DEFAULT_SITE || 'MMH Kelowna') + '|' + (wsItem.locationCode || '');
-        if (!waspBySkuSiteLoc[wsSiteLocKey]) waspBySkuSiteLoc[wsSiteLocKey] = 0;
-        waspBySkuSiteLoc[wsSiteLocKey] += (parseFloat(wsItem.qtyAvailable) || 0);
-      }
-    }
-  }
-
-  // WASP UOM by SKU — for UOM alignment check on Katana tab cell notes
-  var waspUomBySku = {};
-  if (waspData && waspData.items) {
-    for (var wu = 0; wu < waspData.items.length; wu++) {
-      var wuItem = waspData.items[wu];
-      if (wuItem.itemNumber && wuItem.uom && !waspUomBySku[wuItem.itemNumber]) {
-        waspUomBySku[wuItem.itemNumber] = wuItem.uom;
       }
     }
   }
@@ -486,7 +370,7 @@ function writeKatanaTab(ss, katanaData, batchData, waspData) {
           sku: item.sku, name: item.name, location: batchLoc,
           type: item.type || '', lotTracked: 'Yes',
           batch: batch.batchNumber || '', expiry: safeDate(batch.expiry),
-          uom: item.uom || 'ea', purchaseUom: item.purchaseUom || '', conversionRate: item.conversionRate || null, qty: batch.qty,
+          uom: item.uom || 'ea', qty: batch.qty,
           category: item.category || ''
         });
       }
@@ -495,7 +379,7 @@ function writeKatanaTab(ss, katanaData, batchData, waspData) {
         sku: item.sku, name: item.name, location: item.locationName || '',
         type: item.type || '', lotTracked: isLotTracked ? 'Yes' : 'No',
         batch: '', expiry: '',
-        uom: item.uom || 'ea', purchaseUom: item.purchaseUom || '', conversionRate: item.conversionRate || null, qty: item.qtyInStock,
+        uom: item.uom || 'ea', qty: item.qtyInStock,
         category: item.category || ''
       });
     }
@@ -510,7 +394,6 @@ function writeKatanaTab(ss, katanaData, batchData, waspData) {
 
   // Build final rows with separators
   var finalRows  = [];
-  var uomNotes   = []; // parallel array: note text for UOM column (col H = 8), one entry per finalRow
   var separators = [];
   var prevLoc    = null;
   var rowIdx     = 0;
@@ -524,32 +407,37 @@ function writeKatanaTab(ss, katanaData, batchData, waspData) {
       var sepColor = getRawSeparatorColor(loc, KATANA_LOCATION_COLORS);
       separators.push({ index: rowIdx, color: sepColor, label: loc });
       finalRows.push(emptySep.slice());
-      uomNotes.push(['']);
       rowIdx++;
       prevLoc = loc;
     }
 
-    var rowMatchInfo = computeKatanaTargetMatch_(row, waspBySkuLotSiteLoc, waspBySkuSiteLoc, waspTotals);
-    var match = rowMatchInfo.match;
-    var waspQty = rowMatchInfo.qty;
-    var rowKey = row.sku + '|' + row.location + '|' + row.batch;
+    var match = computeRowMatch_(row, katanaTotals, waspTotals, waspBySkuLot, waspBySkuSite, 'KATANA');
+
+    // WASP Qty: lot rows use per-lot lookup, non-lot rows use per-site lookup
+    var waspQty = '';
+    if (row.batch) {
+      var wLotKey = row.sku + '|' + row.batch;
+      waspQty = waspBySkuLot.hasOwnProperty(wLotKey) ? (Math.round((waspBySkuLot[wLotKey] || 0) * 100) / 100) : '';
+    } else if (row.location) {
+      var wSiteKey = row.sku + '|' + row.location;
+      waspQty = waspBySkuSite.hasOwnProperty(wSiteKey) ? (Math.round((waspBySkuSite[wSiteKey] || 0) * 100) / 100) : '';
+    } else if (waspTotals.hasOwnProperty(row.sku)) {
+      waspQty = Math.round((waspTotals[row.sku] || 0) * 100) / 100;
+    }
 
     // Determine WASP Status
     var waspStatus = '';
-    var rowCat = String(row.category || '').toUpperCase().trim();
-    var skipAutoSync = false;
-    for (var sc = 0; sc < AUTO_SYNC_SKIP_CATEGORIES.length; sc++) {
-      if (rowCat === AUTO_SYNC_SKIP_CATEGORIES[sc]) { skipAutoSync = true; break; }
-    }
-    if (preserveMap[rowKey]) {
-      waspStatus = preserveMap[rowKey];
-    } else if (match === 'MATCH' || match === 'ZERO') {
+    if (waspSkuSet[row.sku]) {
       waspStatus = 'Synced';
-    } else if (match === 'KATANA ONLY') {
-      waspStatus = skipAutoSync ? 'NEW' : 'Push';
-    } else if (waspSkuSet[row.sku]) {
-      waspStatus = 'Synced';
+    } else if (preserveMap[row.sku]) {
+      waspStatus = preserveMap[row.sku];
     } else {
+      // New item: auto-sync unless category is in skip list
+      var rowCat = String(row.category || '').toUpperCase().trim();
+      var skipAutoSync = false;
+      for (var sc = 0; sc < AUTO_SYNC_SKIP_CATEGORIES.length; sc++) {
+        if (rowCat === AUTO_SYNC_SKIP_CATEGORIES[sc]) { skipAutoSync = true; break; }
+      }
       waspStatus = skipAutoSync ? 'NEW' : 'Push';
     }
 
@@ -561,7 +449,7 @@ function writeKatanaTab(ss, katanaData, batchData, waspData) {
       row.lotTracked, // E
       row.batch,      // F
       row.expiry,     // G
-      formatUomDisplay_(row.uom, row.purchaseUom),  // H
+      row.uom,        // H
       row.qty,        // I
       waspQty,        // J  - WASP Qty
       match,          // K  - Match
@@ -570,10 +458,6 @@ function writeKatanaTab(ss, katanaData, batchData, waspData) {
       '',             // N  - Adj Status
       row.type || ''  // O  - K.Type (hidden, used by push engine for WASP location routing)
     ]);
-    var kConvNote = formatUomNote_(row.purchaseUom, row.conversionRate, row.uom);
-    var wUom = waspUomBySku[row.sku] || '';
-    var kAlignNote = (wUom && !uomsMatch_(row.uom, wUom)) ? 'WASP UOM: ' + wUom : '';
-    uomNotes.push([kConvNote && kAlignNote ? kConvNote + '\n' + kAlignNote : (kConvNote || kAlignNote)]);
     rowIdx++;
   }
 
@@ -583,9 +467,6 @@ function writeKatanaTab(ss, katanaData, batchData, waspData) {
   }
 
   sheet.getRange(2, 1, finalRows.length, NUM_COLS).setValues(finalRows);
-
-  // UOM notes: "1 lbs = 454 g" on cells that have a unit conversion (col H = 8)
-  sheet.getRange(2, 8, finalRows.length, 1).setNotes(uomNotes);
 
   // Number format on Qty column (I = col 9) and WASP Qty column (J = col 10)
   sheet.getRange(2, 9, finalRows.length, 2).setNumberFormat('0.##');
@@ -766,8 +647,6 @@ function writeWaspTab(ss, waspData, katanaData, batchData) {
   setupRawHeader(sheet, headers, colWidths);
   sheet.getRange(1, 10).setBackground('#c7e933').setFontColor('#1a1a1a'); // K. Qty
   sheet.getRange(1, 12).setBackground('#0c9aff').setFontColor('#ffffff'); // W. Qty
-  sheet.getRange(1, 19).setValue('Net Adj').setBackground('#263238').setFontColor('#ffffff').setFontWeight('bold').setFontSize(10);
-  sheet.setColumnWidth(19, 70);
 
   if (!waspData || !waspData.items || waspData.items.length === 0) {
     Logger.log('Wasp tab: no data');
@@ -812,43 +691,6 @@ function writeWaspTab(ss, waspData, katanaData, batchData) {
     }
   }
 
-  // WASP site totals: SKU|site → sum of ALL sub-location qtys for that site.
-  // Used to detect "SPLIT MATCH" — site totals balance even though individual sub-locations don't.
-  var waspBySkuSiteTotal = {};
-  if (waspData && waspData.items) {
-    var wsfItems = filterWaspItemsForTotals_(waspData.items);
-    for (var wsft = 0; wsft < wsfItems.length; wsft++) {
-      var wsftItem = wsfItems[wsft];
-      if (wsftItem.itemNumber) {
-        var wsftKey = wsftItem.itemNumber + '|' + (wsftItem.siteName || WASP_DEFAULT_SITE || 'MMH Kelowna');
-        if (!waspBySkuSiteTotal[wsftKey]) waspBySkuSiteTotal[wsftKey] = 0;
-        waspBySkuSiteTotal[wsftKey] += (parseFloat(wsftItem.qtyAvailable) || 0);
-      }
-    }
-  }
-
-  // Purchase UOM conversion maps from Katana:
-  //   katanaConvBySku  — SKU → purchaseUom  (e.g. 'lbs')
-  //   katanaRateBySku  — SKU → conversionRate (e.g. 454)
-  // Used to display "lbs → g" and note "1 lbs = 454 g" on WASP UOM cells.
-  var katanaConvBySku = {};
-  var katanaRateBySku = {};
-  var katanaStockUomBySku = {};
-  if (katanaData && katanaData.items) {
-    for (var kconv = 0; kconv < katanaData.items.length; kconv++) {
-      var kconvItem = katanaData.items[kconv];
-      if (kconvItem.sku && kconvItem.purchaseUom && !katanaConvBySku[kconvItem.sku]) {
-        katanaConvBySku[kconvItem.sku] = kconvItem.purchaseUom;
-      }
-      if (kconvItem.sku && kconvItem.conversionRate && !katanaRateBySku[kconvItem.sku]) {
-        katanaRateBySku[kconvItem.sku] = kconvItem.conversionRate;
-      }
-      if (kconvItem.sku && kconvItem.uom && !katanaStockUomBySku[kconvItem.sku]) {
-        katanaStockUomBySku[kconvItem.sku] = kconvItem.uom;
-      }
-    }
-  }
-
   // Pre-build set of SKUs that have actual lot-level rows in WASP data
   var skusWithLotRows = {};
   for (var li = 0; li < waspData.items.length; li++) {
@@ -886,8 +728,8 @@ function writeWaspTab(ss, waspData, katanaData, batchData) {
     // Keep items that are lot-tracked but have no lot inventory yet
     if (isLotTracked && !lotVal && skusWithLotRows[item.itemNumber]) continue;
 
-    var siteVal = item.siteName || WASP_DEFAULT_SITE || 'MMH Kelowna';
-    if (siteVal === '(unknown)' || siteVal === 'unknown') siteVal = WASP_DEFAULT_SITE || 'MMH Kelowna';
+    var siteVal = item.siteName || 'MMH Kelowna';
+    if (siteVal === '(unknown)' || siteVal === 'unknown') siteVal = 'MMH Kelowna';
 
     rows.push({
       sku: item.itemNumber, name: item.description || '',
@@ -938,15 +780,10 @@ function writeWaspTab(ss, waspData, katanaData, batchData) {
   }
 
   // Build final rows — one separator per location (always, even if 0 items)
-  var finalRows      = [];
-  var uomNotes       = []; // parallel: note text for UOM column (col I = 9)
-  var separators     = [];
-  var rowIdx         = 0;
-  var emptySep       = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
-  // Group tracking for Net Adj column
-  var adjGroupRows   = {};  // "sku|site" -> [finalRowIndex, ...]
-  var splitGroupRows = {};  // "sku|site" -> [finalRowIndex, ...]
-  var adjRowDirs     = {};  // finalRowIndex -> '+' or '-'
+  var finalRows   = [];
+  var separators  = [];
+  var rowIdx      = 0;
+  var emptySep    = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''];
 
   for (var li = 0; li < allWaspLocs.length; li++) {
     var locSite   = allWaspLocs[li].site;
@@ -958,7 +795,6 @@ function writeWaspTab(ss, waspData, katanaData, batchData) {
     var sepColor  = getWaspLocColor_(locSite, locCode);
     separators.push({ index: rowIdx, color: sepColor, label: sepLabel });
     finalRows.push(emptySep.slice());
-    uomNotes.push(['']);
     rowIdx++;
 
     var locRows = rowsByLoc[locKey] || [];
@@ -990,25 +826,10 @@ function writeWaspTab(ss, waspData, katanaData, batchData) {
         }
         else if (wSiteQty === 0 && kSiteQty === 0) match = 'ZERO';
         else if (Math.abs(kSiteQty - wSiteQty) < 0.01) match = 'MATCH';
-        else {
-          // Per-row mismatch — SPLIT MATCH if site totals balance,
-          // ADJUSTABLE if auto-fixable (non-lot, no UOM conversion), else MISMATCH (manual)
-          var wSiteTotal = Math.round((waspBySkuSiteTotal[wSiteKey2] || 0) * 100) / 100;
-          if (Math.abs(kSiteQty - wSiteTotal) < 0.01) {
-            match = 'SPLIT MATCH';
-          } else if (row.lotTracked !== 'Yes' && !(katanaConvBySku[row.sku] && katanaConvBySku[row.sku] !== row.uom)) {
-            match = 'ADJUSTABLE';
-          } else {
-            match = 'MISMATCH';
-          }
-        }
+        else match = 'MISMATCH';
       } else {
         match = computeCrossMatch_(row.sku, katanaTotals, waspTotals, 'WASP');
       }
-
-      // Skip WASP-only rows with zero qty — phantom catalog entries, nothing actionable.
-      // They can't be deleted via WASP API; filtering them prevents endless reappearance.
-      if (match === 'WASP ONLY' && (parseFloat(row.qty) || 0) === 0) continue;
 
       finalRows.push([
         row.sku,        // A [0]
@@ -1019,7 +840,7 @@ function writeWaspTab(ss, waspData, katanaData, batchData) {
         row.lotTracked, // F [5] - Lot Tracked (read-only, from WASP)
         row.lot,        // G [6]
         row.dateCode,   // H [7]
-        formatUomDisplay_(row.uom, katanaConvBySku[row.sku] || ''),  // I [8]
+        row.uom,        // I [8]
         row.lot ? (katanaBySkuLot[row.sku + '|' + row.lot] || 0) : (katanaBySkuSite[row.sku + '|' + row.site] || 0), // J [9]  K. Qty
         row.qty,        // K [10] Orig WASP Qty (hidden baseline)
         row.qty,        // L [11] W. Qty (editable)
@@ -1030,68 +851,11 @@ function writeWaspTab(ss, waspData, katanaData, batchData) {
         row.lot,        // Q [16] Orig Lot (hidden)
         row.dateCode    // R [17] Orig DateCode (hidden)
       ]);
-      var wPurchUom = katanaConvBySku[row.sku] || '';
-      var wConvRate = katanaRateBySku[row.sku] || null;
-      var wConvNote = formatUomNote_(wPurchUom, wConvRate, row.uom);
-      var kStockUom = katanaStockUomBySku[row.sku] || '';
-      var wAlignNote = (kStockUom && !uomsMatch_(kStockUom, row.uom)) ? 'Katana UOM: ' + kStockUom + ', WASP: ' + row.uom : '';
-      uomNotes.push([wConvNote && wAlignNote ? wConvNote + '\n' + wAlignNote : (wConvNote || wAlignNote)]);
-      // Track connected rows for Net Adj hyperlinks
-      var naGrpKey = row.sku + '|' + row.site;
-      if (match === 'ADJUSTABLE') {
-        if (!adjGroupRows[naGrpKey]) adjGroupRows[naGrpKey] = [];
-        adjGroupRows[naGrpKey].push(rowIdx);
-        adjRowDirs[rowIdx] = (kSiteQty > wSiteTotal) ? '+' : '-';
-      } else if (match === 'SPLIT MATCH') {
-        if (!splitGroupRows[naGrpKey]) splitGroupRows[naGrpKey] = [];
-        splitGroupRows[naGrpKey].push(rowIdx);
-      }
       rowIdx++;
     }
   }
 
   sheet.getRange(2, 1, finalRows.length, NUM_COLS).setValues(finalRows);
-
-  // ── Net Adj column (19) ──────────────────────────────────────────────────
-  // ADJUSTABLE rows: '+' or '-' plain text (single-row groups)
-  // ADJUSTABLE multi-row groups: HYPERLINK to next connected row (circular)
-  // SPLIT MATCH multi-row groups: HYPERLINK '↔' to next connected row
-  var naSheetId  = sheet.getSheetId();
-  var naValues   = [];
-  for (var nvi = 0; nvi < finalRows.length; nvi++) {
-    naValues.push([finalRows[nvi][14] === 'ADJUSTABLE' ? (adjRowDirs[nvi] || '+') : '']);
-  }
-  sheet.getRange(2, 19, finalRows.length, 1).setValues(naValues);
-  sheet.getRange(2, 19, finalRows.length, 1).setHorizontalAlignment('center');
-
-  var adjGKeys = Object.keys(adjGroupRows);
-  for (var ag = 0; ag < adjGKeys.length; ag++) {
-    var agList = adjGroupRows[adjGKeys[ag]];
-    if (agList.length < 2) continue;
-    for (var agr = 0; agr < agList.length; agr++) {
-      var agIdx  = agList[agr];
-      var agNext = agList[(agr + 1) % agList.length];
-      var agDir  = adjRowDirs[agIdx] || '+';
-      sheet.getRange(agIdx + 2, 19).setFormula(
-        '=HYPERLINK("#gid=' + naSheetId + '&range=A' + (agNext + 2) + '","' + agDir + '")'
-      );
-    }
-  }
-  var spGKeys = Object.keys(splitGroupRows);
-  for (var sg = 0; sg < spGKeys.length; sg++) {
-    var sgList = splitGroupRows[spGKeys[sg]];
-    if (sgList.length < 2) continue;
-    for (var sgr = 0; sgr < sgList.length; sgr++) {
-      var sgIdx  = sgList[sgr];
-      var sgNext = sgList[(sgr + 1) % sgList.length];
-      sheet.getRange(sgIdx + 2, 19).setFormula(
-        '=HYPERLINK("#gid=' + naSheetId + '&range=A' + (sgNext + 2) + '","\u21d4")'
-      );
-    }
-  }
-
-  // UOM notes: "1 lbs = 454 g" on cells that have a unit conversion (col I = 9)
-  sheet.getRange(2, 9, finalRows.length, 1).setNotes(uomNotes);
 
   // Restore pending rows
   var pendingCount = 0;
@@ -1147,16 +911,8 @@ function writeWaspTab(ss, waspData, katanaData, batchData) {
     .setBackground('#c8e6c9')
     .setRanges([matchRange]).build());
   rules.push(SpreadsheetApp.newConditionalFormatRule()
-    .whenTextEqualTo('SPLIT MATCH')
-    .setBackground('#b2dfdb')  // teal — site totals balance, item split across sub-locations
-    .setRanges([matchRange]).build());
-  rules.push(SpreadsheetApp.newConditionalFormatRule()
     .whenTextEqualTo('MISMATCH')
     .setBackground('#ffe0b2')
-    .setRanges([matchRange]).build());
-  rules.push(SpreadsheetApp.newConditionalFormatRule()
-    .whenTextEqualTo('ADJUSTABLE')
-    .setBackground('#fff9c4')  // yellow — fixable with one button
     .setRanges([matchRange]).build());
   rules.push(SpreadsheetApp.newConditionalFormatRule()
     .whenTextEqualTo('WASP ONLY')
@@ -1785,7 +1541,7 @@ function writeSkuLookup_(ss, katanaData, waspData, batchData) {
 // ADJUSTMENT LOG — append-only log of all qty edits
 // -------------------------------------------------------
 
-// logAdjustment_ — writes to the shared "F2 Adjustments" tab in the Debug/Command Center sheet.
+// logAdjustment_ — writes to the shared "Adjustments Log" tab in the Debug/Command Center sheet.
 // Signature matches src/08_Logging.gs logAdjustment() except no saId (engin-src doesn't create Katana SAs).
 // Params: ss, source, action, user, sku, itemName, site, location, lot, expiry, diff, status
 function logAdjustment_(ss, source, action, user, sku, itemName, site, location, lot, expiry, diff, status) {
@@ -1799,9 +1555,9 @@ function logAdjustment_(ss, source, action, user, sku, itemName, site, location,
     if (debugId) adjSs = SpreadsheetApp.openById(debugId);
   } catch (e) { /* fall back to active spreadsheet */ }
 
-  var sheet = adjSs.getSheetByName('F2 Adjustments');
+  var sheet = adjSs.getSheetByName('Adjustments Log');
   if (!sheet) {
-    sheet = adjSs.insertSheet('F2 Adjustments');
+    sheet = adjSs.insertSheet('Adjustments Log');
     var headers = ['Timestamp', 'Source', 'Action', 'User', 'SKU', 'Item Name', 'Site', 'Location', 'Lot / Batch', 'Expiry', 'Diff', 'Katana SA#', 'Status'];
     var colWidths = [155, 100, 80, 120, 120, 180, 120, 130, 120, 90, 70, 130, 80];
     sheet.getRange(1, 1, 1, 13).setValues([headers]);

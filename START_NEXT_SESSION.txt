@@ -1,0 +1,35 @@
+ Read first:
+  - DELETE-ME-LATER\src\HANDOFF_AGENT.txt
+  - DELETE-ME-LATER\src\08_Logging.js
+  - DELETE-ME-LATER\src\14_FlowCoverage.js
+  - DELETE-ME-LATER\src\02_Handlers.js
+  - DELETE-ME-LATER\src\06_ShipStation.js
+  - DELETE-ME-LATER\src\07_F3_AutoPoll.js
+
+  Task:
+  Create a writable local folder:
+  DELETE-ME-LATER\sheet-specs\
+
+  Then create:
+  - 01_activity_sheet_spec.txt
+  - activity_sheet_visual_rules.xlsx
+
+  Scope:
+  Focus only on the first Google Sheet first: the Debug Sheet, especially the Activity tab.
+
+  Goal:
+  Document the ideal target design, not just the current behavior.
+
+  The Activity sheet standard should be:
+  - Rows 1-2 title/header only
+  - Row 3 headers: ID | Time | Flow | Details | Status | Error
+  - Rows 4+ append-only event blocks
+  - Header row + indented sub-item rows
+  - No merged cells in data rows
+  - No overlapping blocks
+  - Only the main reference token is linked
+  - Consistent color system by flow/status
+  - Coverage panel reserved to H:O rows 1:2 only
+
+  Also produce an .xlsx that visually demonstrates the rules.
+  Do not modify GAS source unless explicitly asked.

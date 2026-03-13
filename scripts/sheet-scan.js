@@ -7,7 +7,8 @@
  *   node scripts/sheet-scan.js --tab "Adjustments Log"
  *   node scripts/sheet-scan.js --tab "Activity"
  *   node scripts/sheet-scan.js --list              (show all tab names)
- *   node scripts/sheet-scan.js --tab "Katana" --raw  (JSON output)
+ *   node scripts/sheet-scan.js --tab "Katana" --start-row 1 --max-rows 25
+ *   node scripts/sheet-scan.js --tab "Katana" --raw-full
  *
  * Config: config/sheet-scan.json
  *   { "url": "https://script.google.com/macros/s/.../exec", "token": "your-secret" }
@@ -40,19 +41,33 @@ if (!config.url || !config.token) {
 var args = process.argv.slice(2);
 var tab = null;
 var rawOutput = false;
+var rawFullOutput = false;
 var listMode = false;
 var sheetArg = '';
+var sheetId = '';
+var startRow = '';
+var maxRows = '';
+var startCol = '';
+var maxCols = '';
+var showMeta = false;
 
 for (var i = 0; i < args.length; i++) {
   if (args[i] === '--tab' && args[i + 1])   { tab = args[++i]; }
   if (args[i] === '--raw')                   { rawOutput = true; }
+  if (args[i] === '--raw-full')              { rawFullOutput = true; }
+  if (args[i] === '--meta')                  { showMeta = true; }
   if (args[i] === '--list')                  { listMode = true; }
   if (args[i] === '--sheet' && args[i + 1]) { sheetArg = args[++i]; }
+  if (args[i] === '--sheet-id' && args[i + 1]) { sheetId = args[++i]; }
+  if (args[i] === '--start-row' && args[i + 1]) { startRow = args[++i]; }
+  if (args[i] === '--max-rows' && args[i + 1]) { maxRows = args[++i]; }
+  if (args[i] === '--start-col' && args[i + 1]) { startCol = args[++i]; }
+  if (args[i] === '--max-cols' && args[i + 1]) { maxCols = args[++i]; }
 }
 
 if (!tab && !listMode) {
   console.error('Usage:');
-  console.error('  node scripts/sheet-scan.js --tab "Tab Name" [--sheet sync|debug] [--raw]');
+  console.error('  node scripts/sheet-scan.js --tab "Tab Name" [--sheet sync|debug] [--sheet-id ID] [--start-row N] [--max-rows N] [--start-col N] [--max-cols N] [--meta] [--raw|--raw-full]');
   console.error('  node scripts/sheet-scan.js --list [--sheet sync|debug]');
   process.exit(1);
 }
@@ -64,7 +79,16 @@ var baseUrl = (sheetArg === 'sync' && config.syncUrl) ? config.syncUrl : config.
 
 // ── Build request URL ─────────────────────────────────────────────────────────
 var tabParam = listMode ? '__list__' : tab;
-var requestUrl = baseUrl + '?token=' + encodeURIComponent(config.token) + '&tab=' + encodeURIComponent(tabParam);
+var queryParts = [
+  'token=' + encodeURIComponent(config.token),
+  'tab=' + encodeURIComponent(tabParam)
+];
+if (sheetId) { queryParts.push('sheetId=' + encodeURIComponent(sheetId)); }
+if (startRow) { queryParts.push('startRow=' + encodeURIComponent(startRow)); }
+if (maxRows) { queryParts.push('maxRows=' + encodeURIComponent(maxRows)); }
+if (startCol) { queryParts.push('startCol=' + encodeURIComponent(startCol)); }
+if (maxCols) { queryParts.push('maxCols=' + encodeURIComponent(maxCols)); }
+var requestUrl = baseUrl + '?' + queryParts.join('&');
 
 // ── HTTP GET with redirect follow ─────────────────────────────────────────────
 function get(reqUrl, redirectCount, callback) {
@@ -121,8 +145,14 @@ get(requestUrl, 0, function(err, body, statusCode) {
   // ── List mode ──────────────────────────────────────────────────────────────
   if (listMode) {
     console.log('Tabs in spreadsheet ' + data.spreadsheetId + ':\n');
-    for (var t = 0; t < data.tabs.length; t++) {
-      console.log('  ' + (t + 1) + '. ' + data.tabs[t]);
+    if (data.tabInfo && data.tabInfo.length) {
+      for (var t = 0; t < data.tabInfo.length; t++) {
+        console.log('  ' + (t + 1) + '. ' + data.tabInfo[t].name + '  [' + data.tabInfo[t].rows + ' rows x ' + data.tabInfo[t].columns + ' cols]');
+      }
+    } else {
+      for (var ti = 0; ti < data.tabs.length; ti++) {
+        console.log('  ' + (ti + 1) + '. ' + data.tabs[ti]);
+      }
     }
     console.log('');
     return;
@@ -136,6 +166,11 @@ get(requestUrl, 0, function(err, body, statusCode) {
   }
 
   // ── Raw JSON output ────────────────────────────────────────────────────────
+  if (rawFullOutput) {
+    console.log(JSON.stringify(data, null, 2));
+    return;
+  }
+
   if (rawOutput) {
     console.log(JSON.stringify(rows, null, 2));
     return;
@@ -164,7 +199,20 @@ get(requestUrl, 0, function(err, body, statusCode) {
   var separator = colWidths.map(function(w) { return '-'.repeat(w + 2); }).join('+');
   var headerRow = header.map(function(h, ci) { return ' ' + pad(h, colWidths[ci]) + ' '; }).join('|');
 
-  console.log('Tab:  ' + tab);
+  if (showMeta || data.spreadsheetId || data.truncated) {
+    console.log('Spreadsheet: ' + (data.spreadsheetName || data.spreadsheetId || 'unknown'));
+    console.log('Tab:         ' + tab);
+    if (typeof data.rowStart !== 'undefined') {
+      console.log('Window:      rows ' + data.rowStart + '-' + data.rowEnd + ', cols ' + data.columnStart + '-' + data.columnEnd);
+    }
+    if (typeof data.totalRows !== 'undefined') {
+      console.log('Sheet size:  ' + data.totalRows + ' rows x ' + data.totalColumns + ' cols');
+    }
+    console.log('Truncated:   ' + (data.truncated ? 'yes' : 'no'));
+    console.log('');
+  } else {
+    console.log('Tab:  ' + tab);
+  }
   console.log('Rows: ' + dataRows.length + ' (+ 1 header)\n');
   console.log(separator);
   console.log(headerRow);

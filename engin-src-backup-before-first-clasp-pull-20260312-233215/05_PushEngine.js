@@ -1279,12 +1279,23 @@ function pushKatanaSyncRows_(ss) {
     var sku = String(data[i][0]).trim();
     if (!sku || sku.indexOf(' > ') > -1) continue; // skip separators
 
-    // Direct Katana-location routing for sync push
+    // Smart location routing: type + Katana location
     var katanaLoc = String(data[i][2]).trim();  // col C
-    var itemType = String(data[i][3]).trim();   // col D
-    var katanaRoute = getKatanaPushTarget_(katanaLoc);
-    var targetSite = katanaRoute.site;
-    var targetLocation = katanaRoute.location;
+    var itemType = String(data[i][3]).trim();    // col D
+    var targetSite = WASP_DEFAULT_SITE;
+    var targetLocation = 'QA-Hold-1';
+
+    if (katanaLoc === 'Storage Warehouse') {
+      targetSite = 'Storage Warehouse';
+      targetLocation = 'SW-STORAGE';
+    } else if (katanaLoc === 'MMH Mayfair') {
+      targetSite = 'MMH Mayfair';
+      targetLocation = 'QA-Hold-1';
+    } else if (itemType === 'Material' || itemType === 'Intermediate') {
+      targetLocation = 'PRODUCTION';
+    } else {
+      targetLocation = 'UNSORTED';
+    }
 
     if (!syncSkus[sku]) {
       syncSkus[sku] = {
@@ -1593,15 +1604,11 @@ function pushKatanaAdjustments_(ss) {
 
         var name = String(row[1]).trim();
         var katanaLoc = String(row[2]).trim();
-        var matchStatus = String(row[10] || '').trim();
-        var waspStatus = String(row[11] || '').trim();
         // col D (row[3]) = Katana category (PACKAGING, RAW MATER, etc.) — for display only
         // col O (row[14]) = Katana item type (Material, Intermediate, Product) — used for WASP location routing
         var itemType = String(row[14] || row[3] || '').trim();
         var lotTracked = String(row[4]).trim() === 'Yes';
         var batch = String(row[5]).trim();
-        var uom = String(row[7] || '').trim();
-        var katanaQty = (row[8] instanceof Date) ? 0 : (parseFloat(row[8]) || 0);
         var expiry = '';
         if (row[6] instanceof Date) {
             var eY = row[6].getFullYear();
@@ -1617,37 +1624,49 @@ function pushKatanaAdjustments_(ss) {
         // WASP Qty is now the editable column (row[9]); orig WASP value is in row[12]
         var origQty = (row[12] instanceof Date) ? 0 : (parseFloat(row[12]) || 0);
 
-        // Direct Katana-location routing for adjustment push
-        var katanaRoute = getKatanaPushTarget_(katanaLoc);
-        var targetSite = katanaRoute.site;
-        var targetLocation = katanaRoute.location;
+        // Smart location routing (default)
+        var targetSite = WASP_DEFAULT_SITE;
+        var targetLocation = 'QA-Hold-1';
+        if (katanaLoc === 'Storage Warehouse') {
+            targetSite = 'Storage Warehouse';
+            targetLocation = 'SW-STORAGE';
+        } else if (katanaLoc === 'MMH Mayfair') {
+            targetSite = 'MMH Mayfair';
+            targetLocation = 'QA-Hold-1';
+        } else if (itemType === 'Material' || itemType === 'Intermediate') {
+            targetLocation = 'PRODUCTION';
+        } else {
+            targetLocation = 'UNSORTED';
+        }
 
-        // For REMOVE deltas: look up actual WASP location.
+        // For lot-tracked rows, look up actual WASP location (smart routing may guess wrong)
+        if (lotTracked && batch) {
+            try {
+                var searchResult = waspFetch('ic/item/advancedinventorysearch', {
+                    ItemNumber: sku, Lot: batch, PageSize: 20, PageNumber: 1
+                });
+                var sItems = searchResult.Items || searchResult.items || [];
+                for (var si = 0; si < sItems.length; si++) {
+                    var sItem = sItems[si];
+                    var sLot = String(sItem.Lot || sItem.lot || '').trim();
+                    var sQty = parseFloat(sItem.TotalInHouse || sItem.Quantity || sItem.TotalAvailable || 0);
+                    if (sLot === batch && sQty > 0) {
+                        targetSite = sItem.SiteName || sItem.siteName || targetSite;
+                        targetLocation = sItem.LocationCode || sItem.locationCode || targetLocation;
+                        Logger.log('Katana adj: found ' + sku + '/' + batch + ' at ' + targetSite + '/' + targetLocation + ' qty=' + sQty);
+                        break;
+                    }
+                }
+            } catch (lookupErr) {
+                Logger.log('Katana adj: WASP lookup failed for ' + sku + '/' + batch + ': ' + lookupErr.message);
+            }
+        }
+
+        // For REMOVE deltas: look up actual WASP location regardless of lot-tracking.
         // Smart routing (PACKAGING→UNSORTED, etc.) may guess wrong, causing -46002.
-        // For positive ADD deltas we keep the direct Katana route on purpose.
+        // This runs after the lot-based lookup above so it can override if needed.
         var deltaCheck = editedQty - origQty;
         if (deltaCheck < 0) {
-            if (lotTracked && batch) {
-                try {
-                    var searchResult = waspFetch('ic/item/advancedinventorysearch', {
-                        ItemNumber: sku, Lot: batch, PageSize: 20, PageNumber: 1
-                    });
-                    var sItems = searchResult.Items || searchResult.items || [];
-                    for (var si = 0; si < sItems.length; si++) {
-                        var sItem = sItems[si];
-                        var sLot = String(sItem.Lot || sItem.lot || '').trim();
-                        var sQty = parseFloat(sItem.TotalInHouse || sItem.Quantity || sItem.TotalAvailable || 0);
-                        if (sLot === batch && sQty > 0) {
-                            targetSite = sItem.SiteName || sItem.siteName || targetSite;
-                            targetLocation = sItem.LocationCode || sItem.locationCode || targetLocation;
-                            Logger.log('Katana adj: found ' + sku + '/' + batch + ' at ' + targetSite + '/' + targetLocation + ' qty=' + sQty);
-                            break;
-                        }
-                    }
-                } catch (lookupErr) {
-                    Logger.log('Katana adj: WASP lookup failed for ' + sku + '/' + batch + ': ' + lookupErr.message);
-                }
-            }
             try {
                 var preSearch = waspFetch('ic/item/advancedinventorysearch', {
                     ItemNumber: sku, PageSize: 50, PageNumber: 1
@@ -1687,30 +1706,6 @@ function pushKatanaAdjustments_(ss) {
 
         Logger.log('Katana adj row ' + sheetRowNum + ': ' + sku + ' delta=' + delta);
 
-        var shouldCreateCatalogItem = delta > 0 && (matchStatus === 'KATANA ONLY' || waspStatus === 'NEW');
-        if (shouldCreateCatalogItem) {
-            try {
-                var createResult = createWaspCatalogItem_(
-                    sku,
-                    name || sku,
-                    targetSite,
-                    targetLocation,
-                    lotTracked,
-                    uom,
-                    0,
-                    0
-                );
-                if (!createResult.success) {
-                    Logger.log(
-                        'Katana adj row ' + sheetRowNum + ': create item returned non-success for ' + sku +
-                        ' — continuing to stock add: ' + String(createResult.response || createResult.error || '').substring(0, 200)
-                    );
-                }
-            } catch (createErr) {
-                Logger.log('Katana adj row ' + sheetRowNum + ': create item threw for ' + sku + ' — continuing to stock add: ' + createErr.message);
-            }
-        }
-
         var action;
         if (delta > 0) {
             action = {
@@ -1745,10 +1740,6 @@ function pushKatanaAdjustments_(ss) {
         if (actionResult.success) {
             data[rowIndex][13] = 'Pushed ' + formatTimestamp();
             data[rowIndex][12] = editedQty;  // update orig qty to new value
-            data[rowIndex][10] = computeKatanaAdjustmentMatchStatus_(katanaQty, editedQty);
-            if (shouldCreateCatalogItem || waspStatus === 'Push' || waspStatus === 'NEW' || waspStatus === 'ERROR') {
-                data[rowIndex][11] = 'Synced';
-            }
             for (var bg2 = 0; bg2 < KATANA_COLS; bg2++) {
                 backgrounds[rowIndex][bg2] = '#ffffff';
             }
@@ -1756,9 +1747,6 @@ function pushKatanaAdjustments_(ss) {
             logAdjustment_(ss, 'Google Sheet', (action.type === 'ADD' ? 'Add' : 'Remove'), activeUser, sku, '', targetSite, targetLocation, batch, expiry, Math.round((editedQty - origQty) * 100) / 100, 'OK');
         } else {
             data[rowIndex][13] = 'ERROR';
-            if (shouldCreateCatalogItem) {
-                data[rowIndex][11] = 'ERROR';
-            }
             for (var bg3 = 0; bg3 < KATANA_COLS; bg3++) {
                 backgrounds[rowIndex][bg3] = '#ffcdd2';
             }
@@ -1783,31 +1771,6 @@ function pushKatanaAdjustments_(ss) {
 
     Logger.log('Katana adj push complete: ' + result.success + ' success, ' + result.errors + ' errors');
     return result;
-}
-
-function computeKatanaAdjustmentMatchStatus_(katanaQty, waspQty) {
-  var kQty = parseFloat(katanaQty) || 0;
-  var wQty = parseFloat(waspQty) || 0;
-  if (Math.abs(kQty) < 0.01 && Math.abs(wQty) < 0.01) return 'ZERO';
-  if (Math.abs(kQty - wQty) < 0.01) return 'MATCH';
-  return 'MISMATCH';
-}
-
-function getKatanaPushTarget_(katanaLoc) {
-  var loc = String(katanaLoc || '').trim();
-  if (loc === 'Storage Warehouse') {
-    return { site: 'Storage Warehouse', location: 'SW-STORAGE' };
-  }
-  if (loc === 'MMH Mayfair') {
-    return { site: 'MMH Mayfair', location: 'QA-Hold-1' };
-  }
-  if (loc === 'MMH Kelowna') {
-    return { site: 'MMH Kelowna', location: 'MMH Kelowna' };
-  }
-  return {
-    site: WASP_DEFAULT_SITE,
-    location: loc || 'MMH Kelowna'
-  };
 }
 
 // ============================================

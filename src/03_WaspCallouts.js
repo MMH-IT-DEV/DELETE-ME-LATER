@@ -235,10 +235,7 @@ function buildF2BatchNote_(lot, expiry) {
 }
 
 function buildF2ActivityDetails_(sku, quantity, lot, expiry) {
-  var details = 'WASP Adjustment  ' + sku + ' x' + Math.abs(quantity);
-  var batchNote = buildF2BatchNote_(lot, expiry);
-  if (batchNote) details += '  ' + batchNote;
-  return details;
+  return sku + ' x' + Math.abs(quantity);
 }
 
 // ============================================
@@ -424,7 +421,7 @@ function processSiteBatchAdd(items, siteName, batchId) {
     if (!variant) {
       logToSheet('F2_SKU_NOT_FOUND', { sku: item.sku }, {});
       logAdjustment('WASP', 'Add', item.userName || '', item.sku, '', siteName, item.location || siteName, item.payloadLot || '', item.payloadExpiry || '', item.quantity, '', null, 'ERROR');
-      logActivity('F2', buildF2ActivityDetails_(item.sku, item.quantity, item.payloadLot || '', item.payloadExpiry || ''), 'skipped', 'WASP \u2192 Katana @ ' + (item.location || siteName) + ' @ ' + siteName, [{ sku: item.sku, qty: item.quantity, action: (item.location || siteName) + '  not in Katana', status: 'Skipped', success: false, qtyColor: 'grey' }], null);
+      logActivity('F2', joinActivitySegments_(['WASP Adjustment', buildF2ActivityDetails_(item.sku, item.quantity, item.payloadLot || '', item.payloadExpiry || '')]), 'skipped', 'WASP -> Katana @ ' + getActivityDisplayLocation_(item.location || siteName) + ' @ ' + siteName, [{ sku: item.sku, qty: item.quantity, action: getActivityDisplayLocation_(item.location || siteName) + '  not in Katana', status: 'Skipped', success: false, qtyColor: 'grey' }], null);
       continue;
     }
 
@@ -484,21 +481,17 @@ function processSiteBatchAdd(items, siteName, batchId) {
     logAdjustment('WASP', 'Add', item.userName || '', item.sku, '', siteName, item.location || siteName, lot, expiry || '', item.quantity, result.success ? saNumber : '', result.success ? (result.saId || null) : null, adjStatus);
 
     // Log to Activity tab — link text "WASP Adjustment" links directly to the Katana SA page
+    var saRef = result.saId ? ('SA-' + result.saId) : 'WASP Adjustment';
     var f2AddUrl = getKatanaWebUrl('sa', result.saId);
-    var addActionNote = (item.location || siteName) + '  add';
-    var addBatchNote = buildF2BatchNote_(lot, expiry);
+    var addActionNote = buildActivityActionText_(getActivityDisplayLocation_(item.location || siteName) + '  add', lot, expiry);
     var itemUom = resolveVariantUom(variant);
-    if (addBatchNote) addActionNote += '  ' + addBatchNote;
-    if (!result.success && result.response) {
-      addActionNote += '  [' + parseKatanaError(result.response) + ']';
-    }
     logActivity(
       'F2',
-      buildF2ActivityDetails_(item.sku, item.quantity, lot, expiry),
+      joinActivitySegments_([saRef, buildF2ActivityDetails_(item.sku, item.quantity, lot, expiry)]),
       result.success ? 'success' : 'failed',
-      'WASP \u2192 Katana @ ' + (item.location || siteName) + ' @ ' + siteName,
-      [{ sku: item.sku, qty: item.quantity, uom: itemUom, action: addActionNote, status: result.success ? 'Synced' : 'Failed', success: result.success, qtyColor: 'green' }],
-      f2AddUrl ? { text: 'WASP Adjustment', url: f2AddUrl } : null
+      'WASP -> Katana @ ' + getActivityDisplayLocation_(item.location || siteName) + ' @ ' + siteName,
+      [{ sku: item.sku, qty: item.quantity, uom: itemUom, action: addActionNote, status: result.success ? 'Synced' : 'Failed', success: result.success, error: result.success ? '' : (result.response ? parseKatanaError(result.response) : 'Adjustment failed'), qtyColor: 'green' }],
+      f2AddUrl ? { text: saRef, url: f2AddUrl } : null
     );
 
     // Save snapshot for SA revert — if this SA is deleted in Katana, handleSADeleted
@@ -571,7 +564,7 @@ function processSiteBatchRemove(items, siteName, batchId) {
     if (!variant) {
       logToSheet('F2_SKU_NOT_FOUND', { sku: item.sku }, {});
       logAdjustment('WASP', 'Remove', item.userName || '', item.sku, '', siteName, item.location || siteName, item.payloadLot || '', item.payloadExpiry || '', -Math.abs(item.quantity), '', null, 'ERROR');
-      logActivity('F2', buildF2ActivityDetails_(item.sku, Math.abs(item.quantity), item.payloadLot || '', item.payloadExpiry || ''), 'skipped', 'WASP \u2192 Katana @ ' + (item.location || siteName) + ' @ ' + siteName, [{ sku: item.sku, qty: Math.abs(item.quantity), action: (item.location || siteName) + '  not in Katana', status: 'Skipped', success: false, qtyColor: 'grey' }], null);
+      logActivity('F2', joinActivitySegments_(['WASP Adjustment', buildF2ActivityDetails_(item.sku, Math.abs(item.quantity), item.payloadLot || '', item.payloadExpiry || '')]), 'skipped', 'WASP -> Katana @ ' + getActivityDisplayLocation_(item.location || siteName) + ' @ ' + siteName, [{ sku: item.sku, qty: Math.abs(item.quantity), action: getActivityDisplayLocation_(item.location || siteName) + '  not in Katana', status: 'Skipped', success: false, qtyColor: 'grey' }], null);
       continue;
     }
 
@@ -604,7 +597,7 @@ function processSiteBatchRemove(items, siteName, batchId) {
         if (lotFromPayload) {
           logToSheet('F2_BATCH_SKIP_NOT_FOUND', { sku: item.sku, lot: lot }, {});
           logAdjustment('WASP', 'Remove', item.userName || '', item.sku, '', siteName, item.location || siteName, lot, expiry || '', -Math.abs(item.quantity), '', null, 'ERROR');
-          logActivity('F2', buildF2ActivityDetails_(item.sku, Math.abs(item.quantity), lot, expiry || ''), 'skipped', 'WASP \u2192 Katana @ ' + (item.location || siteName) + ' @ ' + siteName, [{ sku: item.sku, qty: Math.abs(item.quantity), action: (item.location || siteName) + '  lot not in Katana', status: 'Skipped', success: false, qtyColor: 'grey' }], null);
+          logActivity('F2', joinActivitySegments_(['WASP Adjustment', buildF2ActivityDetails_(item.sku, Math.abs(item.quantity), lot, expiry || '')]), 'skipped', 'WASP -> Katana @ ' + getActivityDisplayLocation_(item.location || siteName) + ' @ ' + siteName, [{ sku: item.sku, qty: Math.abs(item.quantity), action: getActivityDisplayLocation_(item.location || siteName) + '  lot not in Katana', status: 'Skipped', success: false, qtyColor: 'grey' }], null);
           continue;
         }
         // Fallback lot not in Katana — not lot-tracked, proceed without batch
@@ -641,21 +634,17 @@ function processSiteBatchRemove(items, siteName, batchId) {
     logAdjustment('WASP', 'Remove', item.userName || '', item.sku, '', siteName, item.location || siteName, lot, expiry || '', -Math.abs(item.quantity), result.success ? saNumberR : '', result.success ? (result.saId || null) : null, adjRemStatus);
 
     // Log to Activity tab — link text "WASP Adjustment" links directly to the Katana SA page
+    var saRefR = result.saId ? ('SA-' + result.saId) : 'WASP Adjustment';
     var f2RemUrl = getKatanaWebUrl('sa', result.saId);
-    var removeActionNote = (item.location || siteName) + '  remove';
-    var removeBatchNote = buildF2BatchNote_(lot, expiry);
+    var removeActionNote = buildActivityActionText_(getActivityDisplayLocation_(item.location || siteName) + '  remove', lot, expiry);
     var removeUom = resolveVariantUom(variant);
-    if (removeBatchNote) removeActionNote += '  ' + removeBatchNote;
-    if (!result.success && result.response) {
-      removeActionNote += '  [' + parseKatanaError(result.response) + ']';
-    }
     logActivity(
       'F2',
-      buildF2ActivityDetails_(item.sku, Math.abs(item.quantity), lot, expiry),
+      joinActivitySegments_([saRefR, buildF2ActivityDetails_(item.sku, Math.abs(item.quantity), lot, expiry)]),
       result.success ? 'success' : 'failed',
-      'WASP \u2192 Katana @ ' + (item.location || siteName) + ' @ ' + siteName,
-      [{ sku: item.sku, qty: Math.abs(item.quantity), uom: removeUom, action: removeActionNote, status: result.success ? 'Synced' : 'Failed', success: result.success, qtyColor: 'red' }],
-      f2RemUrl ? { text: 'WASP Adjustment', url: f2RemUrl } : null
+      'WASP -> Katana @ ' + getActivityDisplayLocation_(item.location || siteName) + ' @ ' + siteName,
+      [{ sku: item.sku, qty: Math.abs(item.quantity), uom: removeUom, action: removeActionNote, status: result.success ? 'Synced' : 'Failed', success: result.success, error: result.success ? '' : (result.response ? parseKatanaError(result.response) : 'Adjustment failed'), qtyColor: 'red' }],
+      f2RemUrl ? { text: saRefR, url: f2RemUrl } : null
     );
 
     // Save snapshot for SA revert — if this SA is deleted in Katana, handleSADeleted

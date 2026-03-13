@@ -353,9 +353,9 @@ function processShipment(shipment, execId) {
           ledgerKey: ledgerLine ? ledgerLine.lineKey : '',
           success: true,
           preserveLedgerStatus: true,
-          action: (proc.bundleSku ? 'SHOPIFY  (bundle: ' + proc.bundleSku + ')' : 'SHOPIFY'),
+          action: buildActivityActionText_('deduct for shipment' + (proc.bundleSku ? '  (bundle: ' + proc.bundleSku + ')' : ''), '', ''),
           status: previousLedgerStatus === 'Voided' ? 'Returned' : 'Deducted',
-          error: 'Already handled in ledger',
+          error: '',
           qtyColor: 'grey'
         });
         ledgerResults.push(itemResults[itemResults.length - 1]);
@@ -399,9 +399,7 @@ function processShipment(shipment, execId) {
         uom: procUom,
         ledgerKey: ledgerLine ? ledgerLine.lineKey : '',
         success: removeResult.success || false,
-        action: (proc.bundleSku ? 'SHOPIFY  (bundle: ' + proc.bundleSku + ')' : 'SHOPIFY')
-          + (itemLot ? '  lot:' + itemLot : '')
-          + (itemDateCode ? '  exp:' + itemDateCode : ''),
+        action: buildActivityActionText_('deduct for shipment' + (proc.bundleSku ? '  (bundle: ' + proc.bundleSku + ')' : ''), itemLot, itemDateCode),
         status: removeResult.success ? 'Deducted' : 'Failed',
         error: removeResult.success ? '' : removeError,
         qtyColor: 'red'
@@ -439,13 +437,10 @@ function processShipment(shipment, execId) {
 
   // Prepare Activity log header
   var itemCount = shipmentItems.length;
-  var headerDetails;
-  if (itemCount === 1 && itemResults.length === 1) {
-    headerDetails = '#' + orderNumber + '  ' + itemResults[0].sku + ' x' + itemResults[0].qty;
-  } else {
-    headerDetails = '#' + orderNumber + '  ' + itemCount + ' items';
-  }
-  if (failCount > 0) headerDetails += '  ' + failCount + ' error' + (failCount > 1 ? 's' : '');
+  var headerDetails = joinActivitySegments_([
+    '#' + orderNumber,
+    buildActivityCountSummary_(itemCount, 'line', 'lines', 'shipped')
+  ]);
 
   // Build Shopify search link
   var shopifyLink = 'https://admin.shopify.com/store/mymagichealer/orders?query=' + encodeURIComponent(orderNumber);

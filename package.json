@@ -7,7 +7,17 @@
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "clasp:whoami": "clasp show-authorized-user",
+    "clasp:status": "clasp -P src -I src status",
+    "clasp:pull": "clasp -P src -I src pull -f",
+    "clasp:push": "clasp -P src -I src push -f",
+    "clasp:open": "clasp -P src open",
+    "clasp:versions": "clasp -P src versions",
+    "clasp:version": "clasp -P src version",
+    "clasp:deployments": "clasp -P src deployments",
+    "clasp:deploy": "node scripts/clasp-deploy.js",
+    "clasp:apis": "clasp -P src apis"
   },
   "keywords": [],
   "author": "",

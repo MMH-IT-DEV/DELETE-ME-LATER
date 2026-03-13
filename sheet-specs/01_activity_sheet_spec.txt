@@ -1,0 +1,652 @@
+Debug Sheet Activity Tab - Target Design Spec
+Date: 2026-03-13
+Scope: Debug Sheet only, with emphasis on the Activity tab
+Out of scope: GAS source changes, non-Debug sheets, implementation sequencing
+
+1. Purpose
+The Activity tab is the primary human-readable operational timeline for the Debug Sheet.
+It must let an operator scan what happened, in what order, to which business reference, and whether the result was clean, partial, skipped, or failed.
+It is not a raw trace sink and it is not a flow-detail tab.
+
+2. Source Context Reviewed
+Reviewed files:
+- DELETE-ME-LATER\src\HANDOFF_AGENT.txt
+- DELETE-ME-LATER\src\08_Logging.js
+- DELETE-ME-LATER\src\14_FlowCoverage.js
+- DELETE-ME-LATER\src\02_Handlers.js
+- DELETE-ME-LATER\src\06_ShipStation.js
+- DELETE-ME-LATER\src\07_F3_AutoPoll.js
+
+Key current-state observations from source:
+- The Activity logger currently assumes rows 1-3 are reserved and writes data from row 4 onward.
+- The logger currently writes 6 visible data columns, but sheet bootstrap still includes a legacy 7th "Retry" header.
+- Header rows are color-filled directly by flow and sub-item rows are color-filled directly by outcome.
+- The coverage panel currently reserves header space in H:O rows 1:2 and merges I1:N1 for its title.
+- The Activity tab already behaves as a grouped "header row + sub-item rows" event log.
+- Only the main reference token in the header detail should be clickable; sub-item rows should remain plain text.
+
+3. Target Information Architecture
+3.1 Sheet regions
+- Rows 1-2: title/header region only
+- Row 3: column header row only
+- Rows 4+: append-only event blocks only
+- Columns A:F: Activity log
+- Column G: visual spacer only; no semantic data
+- Columns H:O rows 1:2 only: Flow Coverage panel reservation
+- Columns H:O rows 3+: unused by the Activity standard unless explicitly redesigned later
+
+3.2 Row 3 headers
+Exact row 3 header contract:
+- A3 = ID
+- B3 = Time
+- C3 = Flow
+- D3 = Details
+- E3 = Status
+- F3 = Error
+
+There is no Retry column in the target Activity standard.
+
+3.3 Frozen structure
+- Freeze rows 1:3
+- Do not freeze columns for the initial standard
+
+4. Header Region Standard
+4.1 Rows 1-2
+Rows 1-2 are reserved for sheet identity and operational summary only.
+They must not contain event data.
+
+Recommended layout:
+- A1:F1 = sheet title area, visually prominent
+- A2:F2 = sheet subtitle / operating guidance
+- H1:O2 = coverage panel reservation
+
+4.2 Coverage panel reservation
+The Flow Coverage panel is allowed only in H:O rows 1:2.
+Rules:
+- It must never extend into row 3 or below.
+- It must never overlap columns A:F.
+- It must never force merges into data rows.
+- A future redesign may remove merges in the panel itself, but the panel footprint remains H:O rows 1:2.
+
+5. Activity Event Block Standard
+5.1 Event block definition
+An event block is one logical operation rendered as:
+- one header row
+- zero or more immediately following indented sub-item rows
+
+Example block shape:
+- Row N: header row
+- Rows N+1..N+k: sub-item rows for that same event
+- Row N+k+1: next header row begins a new event block
+
+5.2 Header row contract
+Header rows represent the single canonical summary for an operation.
+Rules:
+- Column A must contain the event ID
+- Column B must contain the timestamp
+- Column C must contain the human-readable flow label
+- Column D must contain the summary text with optional context
+- Column E must contain the final block status
+- Column F must contain the block-level error summary, warning summary, or blank
+
+5.3 Sub-item row contract
+Sub-item rows expand the header row into item-level detail.
+Rules:
+- Columns A:C must remain blank
+- Column D contains the indented line item text
+- Column E contains item-level status when useful
+- Column F contains item-level error text when present
+- Sub-item rows belong to the most recent header row above them until the next nonblank A cell
+
+Status lane rules for sub-item rows:
+- yellow / amber warning rows should explicitly show "Skipped" in column E
+- failed sub-item rows should explicitly show "Failed" in column E and use column F for the failure reason
+- successful sub-item rows may show their final action status in column E when that helps scanning
+
+5.4 Append-only guarantee
+Rows 4+ are append-only by default.
+Allowed exception:
+- state correction of the existing block that represents the same real-world event, such as a shipped row changing to voided
+
+Even when updating an existing block:
+- no rows may be inserted into another block
+- no sub-item may move under the wrong header
+- block boundaries must remain intact
+
+5.5 No overlapping blocks
+The visual or logical footprint of one event block must never overlap another.
+That means:
+- no merged cells in data rows
+- no floating notes or side panels inside rows 4+
+- no writing into H:O as a second per-row payload
+- no orphaned sub-items between blocks
+
+6. Details Cell Rules
+6.1 Header detail format
+The header Details cell should be concise and scan-friendly:
+- reference token first
+- core summary second
+- directional or location context last
+
+Patterns:
+- "#91500  3 items  -> SHOPIFY @ MMH Kelowna"
+- "ST-1042  5 items  BULK -> SHOPIFY"
+- "MO-7177  FGJ-MS-1 x1733  -> PRODUCTION"
+
+6.2 Linking rule
+Only the main reference token in the header Details cell may be hyperlinked.
+Examples of valid linked tokens:
+- "#91500"
+- "ST-1042"
+- "PO-2287"
+- "MO-7177"
+
+Rules:
+- The rest of the header text remains plain text
+- Sub-item rows do not contain hyperlinks
+- Do not link more than one token in a single Activity block header
+- The primary header reference should resolve to the direct Katana record URL when that record exists in Katana
+- F5 order references in the ideal model should point to the Katana sales order page, not to a Shopify admin search link
+
+6.3 Canonical header text order
+Header Details text should follow one fixed segment order so it is easy to generate, easy to scan, and easy to parse later.
+
+Canonical header pattern:
+- <linked reference>
+- <primary summary>
+- <movement / destination context>
+
+Formatting rule:
+- join non-empty segments with exactly two spaces
+- do not reorder segments per scenario
+- do not inject status words into Details
+- do not inject error counts into Details
+
+Examples:
+- "PO-572  1 line received  -> RECEIVING-DOCK @ MMH Kelowna"
+- "ST-253  3 lines moved  SW-STORAGE -> RECEIVING-DOCK"
+- "MO-7344  FGJ-MS-1 x1702  -> PRODUCTION"
+- "MO-7359  1 ingredient restored  <- PRODUCTION"
+- "#94188  1 line shipped  -> SHOPIFY @ MMH Kelowna"
+- "SO-AMZ-22082  1 line staged  -> AMAZON-FBA"
+
+6.4 Canonical header segment meanings
+Segment 1:
+- the single primary reference token
+- always first
+- always the only linked token
+
+Segment 2:
+- the shortest meaningful summary of what the entry is about
+- for F1, F3, F5, F6 this should usually be a line count plus action
+- for F2 this should usually be the adjusted SKU and quantity for single-item rows, or an adjustment count for grouped batches
+- for F4 this should usually be the produced output SKU and quantity
+
+Recommended summary phrases:
+- F1: "<n> line(s) received"
+- F2 single: "<sku> x<qty>"
+- F2 grouped: "<n> adjustment(s)"
+- F3: "<n> line(s) moved"
+- F4: "<output-sku> x<qty>"
+- F4 revert: "<n> ingredient(s) restored" or "<n> line(s) reversed"
+- F5: "<n> line(s) shipped"
+- F6: "<n> line(s) staged"
+
+Segment 3:
+- the movement, destination, or operating context
+- use a single left-to-right expression
+- prefer one arrow only
+
+Examples:
+- "-> RECEIVING-DOCK @ MMH Kelowna"
+- "WASP -> Katana @ PROD-RECEIVING @ MMH Kelowna"
+- "SW-STORAGE -> RECEIVING-DOCK"
+- "mixed-source -> QA-Hold-1"
+- "-> SHOPIFY @ MMH Kelowna"
+- "-> AMAZON-FBA"
+
+6.5 Canonical sub-item text order
+Sub-item Details text should also use a fixed segment order.
+
+Standard sub-item pattern:
+- <tree prefix>
+- <item token>
+- <action phrase>
+- <optional lot/expiry metadata>
+- <optional batch-count suffix>
+
+Where:
+- item token = "<sku> x<qty> [uom]"
+- metadata tokens append in fixed order: lot first, exp second
+- batch-count suffix comes last
+
+Examples:
+- "|- AGJAR-2 x1 each  receive into RECEIVING-DOCK"
+- "|- UFC-1OZ x1050 each  PROD-RECEIVING  add"
+- "|- UFC-4OZ x3  deduct for shipment"
+- "|- LABSSEAL-1 x1702 each  consume from PRODUCTION"
+- "`- FGJ-MS-1 x1702 each  produce into PRODUCTION"
+- "|- UFC-1OZ x600 each  deduct for shipment  (2 batches)"
+
+6.6 Canonical nested batch text order
+Nested batch rows should be simpler than normal sub-item rows.
+They should not repeat the parent SKU unless there is a strong reason.
+
+Nested batch pattern:
+- <tree prefix>
+- <qty token>
+- <optional uom>
+- <optional lot token>
+- <optional exp token>
+
+Examples:
+- "|  |- x497 each  lot:SHIP-LOT-A  exp:2029-03-31"
+- "|  `- x103 each  lot:SHIP-LOT-B  exp:2029-04-15"
+
+6.7 Standard action phrases
+To keep generation logic simple, use a small fixed verb set.
+
+Preferred action phrases:
+- F1: "receive into <location>"
+- F2 add: "<location>  add"
+- F2 remove: "<location>  remove"
+- F2 skip missing item: "<location>  not in Katana"
+- F2 skip missing lot: "<location>  lot not in Katana"
+- F2 revert add-back: "<location>  restore"
+- F2 revert remove-backout: "<location>  remove"
+- F3: "move <source> -> <dest>"
+- F4 input: "consume from <location>"
+- F4 output: "produce into <location>"
+- F4 revert add-back: "restore to <location>"
+- F4 revert remove-backout: "remove from <location>"
+- F5 ship: "deduct for shipment"
+- F5 void/reversal: "return to stock"
+- F6: "stage into <location>"
+
+6.8 What must stay out of Details
+To keep the text stable and implementation-safe, these belong outside Details:
+- status words such as Complete, Partial, Failed, Skipped
+- error counts like "1 error", "2 skipped", "1 warning"
+- long diagnostic explanations
+- duplicate references
+
+Those belong in:
+- Status column for the state
+- Error column for true failure summaries only
+
+Count-only rollups should usually be omitted entirely from the header Error cell if the child rows already make the issue obvious.
+Examples to omit from header Error in the target model:
+- "1 failed"
+- "2 skipped"
+- "1 warning"
+
+Use header Error only when there is a real block-level message that adds information beyond the child rows.
+
+6.9 Implementation-safe generation rules
+The text standard should be trivial to assemble from tokens.
+
+Recommended implementation approach:
+- build a list of segments in the canonical order
+- omit empty segments
+- join segments with two spaces
+- never branch into custom wording when a token is empty; just omit that token
+- use exact token formats:
+  - qty = "x" + value
+  - lot = "lot:" + value
+  - exp = "exp:" + yyyy-mm-dd
+  - batch suffix = "(" + n + " batches)"
+
+This keeps both rendering and later parsing predictable.
+
+6.10 Compact split-batch parent rows
+When a row splits into batches, the parent row should use a more compact format than a normal action row.
+This matches the existing visual language more closely and reduces repetition.
+
+Split-batch parent pattern:
+- <tree prefix>
+- <sku> <qty> [uom]
+- <context token>
+- <batch-count suffix>
+
+Examples:
+- "|- UFC-1OZ x600 each  RECEIVING-DOCK  (2 batches)"
+- "|- FGJ-MS-1 x600 each  BULK -> SHOPIFY  (2 batches)"
+- "|- LUP-1 x600 each  PRODUCTION  (2 batches)"
+- "|- UFC-1OZ x600 each  SHOPIFY  (2 batches)"
+- "|- VB-UFC-KIT x600 each  AMAZON-FBA  (2 batches)"
+
+Rules:
+- do not repeat the full action phrase on the parent split-batch row
+- use a short context token instead
+- keep full lot/expiry information on the nested batch rows only
+
+6.10.1 Split-batch decision rules
+Use split-batch rendering only when one logical item line resolves into 2 or more concrete batch outcomes.
+
+If/then rules:
+- if one logical item resolves to exactly one concrete batch outcome, render one normal sub-item row only
+- if one logical item resolves to 2 or more concrete batch outcomes, render:
+  - one parent aggregate row
+  - followed immediately by nested batch rows
+- if the parent row is split only for lot/batch visibility, keep the parent row status blank
+- if nested batch rows have mixed outcomes, put the outcome on each nested row, not on the parent row
+- if a split-batch parent exists, nested rows must not repeat the SKU
+- if nested rows carry lot/expiry, use qty first, then lot, then expiry
+
+Target visual pattern for a split batch:
+- parent row: "|- <sku> x<qty> [uom]  <context token>  (<n> batches)"
+- nested row: "|  |- x<qty> [uom]  [lot]  [exp]"
+- last nested row: "|  `- x<qty> [uom]  [lot]  [exp]"
+
+Example:
+- parent: "|- LUP-1 x600 each  PRODUCTION  (2 batches)"
+- nested: "|  |- x497 each"
+- nested: "|  `- x103 each  lot:UFC416B  exp:2029-03-31"
+
+6.10.2 Flow-specific split-batch mapping
+The same visual grammar applies across flows, but the parent-row context token changes by flow.
+
+If/then rules by flow:
+- if F1 receive splits across batches, parent context token = receiving location, for example "RECEIVING-DOCK"
+- if F2 adjustment splits across batches, parent context token = short action context, for example "PROD-RECEIVING  add" or "SHIPPING-DOCK  remove"
+- if F3 transfer splits across batches, parent context token = "<source> -> <dest>"
+- if F4 ingredient consumption splits across batches, parent context token = source location, for example "PRODUCTION"
+- if F5 shipment deduction splits across batches, parent context token = short destination token, for example "SHOPIFY"
+- if F6 staging splits across batches, parent context token = staging destination, for example "AMAZON-FBA"
+
+6.10.3 Mixed-outcome split-batch rules
+When nested rows do not all succeed, rendering should stay consistent and scannable.
+
+If/then rules:
+- if one nested batch row is skipped, color that nested row as skipped and show "Skipped" in column E
+- if one nested batch row fails, show "Failed" in column E and the reason in column F
+- if one nested batch row succeeds, use the normal success status for that flow on that row
+- if nested outcomes are mixed, the header row may be Partial while the parent split row remains status-blank
+- do not add summary text like "1 failed" to the parent split row
+
+6.10.4 Minimum scenario coverage by flow
+The reference model and QA preview set must show enough variation to prove the grammar works across all flows.
+
+Minimum preview coverage:
+- F1: single receive, split-batch receive, revert receive
+- F2: synced add, skipped adjustment, split-batch adjustment, revert adjustment
+- F3: synced transfer, mixed-source partial transfer, split-batch transfer, revert transfer
+- F4: split-batch manufacturing, failed manufacturing, revert manufacturing
+- F5: full shipment, split-batch shipment, shipment reversal / return
+- F6: full staging, split-batch staging, staging reversal
+
+Review rule:
+- do not approve Activity formatting changes unless the QA preview matrix still includes these scenario classes
+
+6.10.5 Revert / reversal rules
+Reverse-direction entries should use the same canonical grammar as forward entries, with only the action and context tokens changing.
+
+If/then rules:
+- if a flow is rendering a reversal, use a reverse-looking context token such as "<- RECEIVING-DOCK", "<- PRODUCTION", "<- SHOPIFY @ <site>", or "<- SHIPPING-DOCK"
+- if a reverse flow returns stock, use a return/restore/remove verb that matches the real direction of inventory movement
+- do not invent a separate one-off text style for reversals; keep the same three-part header grammar
+
+Preferred reverse summaries:
+- F1: "<n> line(s) reverted"
+- F2: "<n> adjustment(s) reversed" or single-item summary when more useful
+- F3: "<n> line(s) reversed"
+- F4: "<n> ingredient(s) restored" or "<n> line(s) reversed"
+- F5: "<n> line(s) returned"
+- F6: "<n> line(s) reversed"
+
+Preferred reverse sub-item verbs:
+- F1: "remove from <location>"
+- F2: "restore" or "remove" depending on the rollback direction
+- F3: "move <source> -> <dest>"
+- F4: "restore to <location>" or "remove from <location>"
+- F5: "return to stock"
+- F6: "restore to SHIPPING-DOCK"
+
+6.11 Skipped-row error text policy
+Skipped rows should not normally carry a visible reason in the Activity Error column.
+The target model treats skipped rows as warning-state rows, not failure-state rows.
+
+Target rule:
+- failed rows may show a reason in Error
+- skipped rows leave Error blank in the target model
+- if a skipped reason must be preserved somewhere, prefer a deeper audit/detail tab rather than the main Activity view
+
+Related presentation rule:
+- a skipped row should still show "Skipped" in column E
+- a failed sub-item row should show "Failed" in column E plus a populated column F
+
+Reason:
+- reduces visual noise
+- keeps the Activity tab scannable
+- avoids making warnings read like hard failures
+
+7. Visual Rules
+7.1 Overall visual objective
+The sheet should read as a compact audit timeline, not as a decorative dashboard.
+Color must clarify flow and status, not compete with the data.
+
+7.2 Flow color system
+Each header row uses a consistent flow family color across the full A:F header row.
+Recommended target mapping based on existing conventions:
+- F1 Receiving = light blue
+- F2 Adjustments = teal
+- F3 Transfers = peach
+- F4 Manufacturing = lavender
+- F5 Shipping = cyan
+- F6 Amazon FBA / staging-related flow = orange
+
+The exact hex values may evolve, but each flow must keep a stable, distinguishable family.
+
+7.3 Status color system
+Status colors must be semantically consistent across header and sub-item rows.
+Recommended target mapping:
+- Complete / Received / Synced / Shipped / Added / Deducted / Returned / Produced / Staged = green family
+- Partial = yellow family
+- Skipped / Pending / Review = amber family
+- Failed / Error = red family
+- Voided / Cancelled / Reverted terminal states = neutral grey or clearly differentiated amber-grey, but consistent
+
+Skipped row rendering rule:
+- Detail cell = amber / yellow
+- Status cell = amber / yellow
+- Error cell = plain background unless the row is actually failed
+
+Reason:
+- skipped rows communicate a warning or unresolved condition
+- they should not visually read as hard failures
+
+7.4 Quantity emphasis inside sub-item text
+If rich text is used in Details:
+- deduction quantities = red text
+- addition / return quantities = green text
+- neutral aggregate or parent placeholder quantities = grey text
+
+The quantity color should make direction legible at a glance:
+- red = stock leaving / being consumed / being deducted
+- green = stock arriving / being added / being produced / being returned
+- grey = aggregate parent line, placeholder, or neutral grouping line
+
+7.5 Indentation rules
+Sub-items must read as subordinate to the header row.
+Tree lines are required in the target model because they make parent-child relationships obvious faster than indentation alone.
+
+Required pattern:
+- header row
+- tree-lined sub-item rows
+- tree-lined nested batch rows when a line splits into batches
+
+Preferred glyph family:
+- parent/child connectors such as "|-", "|", and "`-" in ASCII-safe environments
+- or box-drawing equivalents such as "├─", "│", and "└─" where the rendering environment supports them
+
+The exact characters may vary by environment, but the visual tree structure is mandatory.
+
+7.6 Split-batch presentation is universal
+Split-batch rendering is not an F3-only or F4-only exception.
+If one logical line in Katana resolves into multiple inventory batches, the Activity tab must support that pattern the same way for every Activity flow that can surface line-level detail.
+
+Target rule:
+- any eligible flow may render a parent sub-item row with an aggregate quantity and a batch count
+- that parent row may be followed by nested batch rows
+- each nested batch row may show qty, lot, expiry, and status/error outcome
+
+This pattern must be available for:
+- F1 Receiving
+- F2 Adjustments
+- F3 Transfers
+- F4 Manufacturing
+- F5 Shipping
+- F6 Amazon / staging-related Activity entries
+
+8. Data Integrity Rules
+8.1 No merged cells in data rows
+Rows 4+ must contain zero merged cells.
+Reason:
+- preserves sorting safety
+- preserves append safety
+- prevents overlap bugs
+- keeps updates predictable
+
+8.2 Stable block parsing
+A block parser must be able to detect:
+- header row: column A is populated
+- sub-item row: column A is blank and row belongs to the previous header
+
+No other row type is permitted in rows 4+.
+
+8.3 Error placement
+- Column F is the error lane
+- Header row column F holds the summarized block issue count or the single most important warning
+- Sub-item row column F holds the item-specific error
+- Long raw payloads do not belong in Activity
+
+9. Flow-Specific Presentation Guidance
+9.1 F2 Adjustments
+- Header should lead with a single linked stock-adjustment reference token, which may be the literal "WASP Adjustment" link when that is what the live system uses
+- Single-item F2 entries should usually summarize the adjusted SKU and quantity, not a generic count
+- Context should read as WASP -> Katana plus the target location and site
+- Sub-items should keep the current location-first action wording when that is what the implementation already emits, for example "<location>  add" or "<location>  remove"
+- F2 should demonstrate add, remove, skipped, failed, and revert examples in the reference model
+
+9.2 F5 Shipping
+- Header should lead with the Shopify order number
+- Only that order token should be linked
+- Sub-items should emphasize deductions or returns
+- Voids should update the original block instead of creating an overlapping duplicate narrative when the business intent is "same shipment changed state"
+- F5 should also support split-batch deduction or return rendering when one shipped line resolves against multiple lots/batches
+
+9.3 F3 Transfers
+- Header should summarize transfer reference and total item count
+- Context should express source -> destination
+- Multi-batch detail may use a parent line plus indented batch rows
+- Nested sub-items must still stay within the same event block
+
+9.4 F1 / F4 / F6
+- Keep the same header-first, item-detail-second pattern
+- Use flow-specific terms in Status, but preserve the shared color semantics
+- F1 receiving should support split-batch additions when one received line lands into multiple lots/batches
+- F4 manufacturing should support split-batch ingredient consumption and split-batch output-related detail
+- F6 should support split-batch movement detail the same way if a single logical line resolves into multiple batches
+
+10. Scenario Coverage Requirements
+The reference model should demonstrate more than a single "happy path" block.
+It should show how the target Activity tab handles the main scenarios operators actually encounter.
+
+Minimum scenario coverage for the model workbook:
+- F1 complete receive
+- F1 split-batch receive
+- F2 synced add
+- F2 synced remove
+- F2 skipped adjustment
+- F2 failed adjustment
+- F2 revert entry
+- F3 full success transfer
+- F3 failed transfer
+- F3 partial transfer with mixed-source or source-resolution issues
+- F3 split-batch transfer
+- F4 partial manufacturing entry with skipped items and warnings
+- F4 failed manufacturing entry
+- F4 split-batch manufacturing entry
+- F4 revert entry
+- F5 shipped success
+- F5 partial shipment with one or more failed deductions
+- F5 lot-tracked shipment example
+- F5 split-batch shipment
+- F6 complete entry
+- F6 split-batch entry
+
+The purpose of the model workbook is to show the ideal target visual language for these cases, not to mirror today's exact code output.
+
+11. Current vs Target Deltas
+The current implementation is close, but the target standard should explicitly correct these inconsistencies:
+- Legacy 7th Retry header should be removed from the Activity contract
+- Rows 1-2 should be treated as title/header only; row 3 alone is the data header row
+- Coverage panel space must remain confined to H:O rows 1:2
+- Data rows must remain unmerged and non-overlapping
+- Hyperlink behavior should stay limited to the main reference token only
+- Flow/status color usage should be defined as a standard, not just an implementation side effect
+- Split-batch rendering should be treated as a cross-flow capability, not a special-case view
+
+12. Acceptance Criteria
+The Activity tab design is acceptable only if all of the following are true:
+- Row 3 headers are exactly ID | Time | Flow | Details | Status | Error
+- Rows 4+ contain only append-only event blocks
+- Every event block has one header row and optional sub-item rows directly beneath it
+- No merged cells exist in any data row
+- No event block overlaps another block
+- Only the main reference token is linked in each header row
+- Flow header colors are consistent
+- Status colors are consistent
+- Coverage occupies only H:O rows 1:2
+- No data is written into the coverage region below row 2
+- Split-batch examples can be represented consistently for every supported Activity flow
+
+13. Suggested Visual Baseline
+Recommended widths for the first pass:
+- A ID: narrow
+- B Time: narrow-medium
+- C Flow: medium
+- D Details: wide
+- E Status: narrow-medium
+- F Error: wide
+- G spacer: very narrow
+- H:O coverage: compact cards within rows 1:2 only
+
+14. Implementation and QA Workflow
+The safest implementation path is:
+- one shared Activity renderer owns formatting, colors, tree lines, links, and row placement
+- each flow should build structured entry data and hand that to the renderer instead of hand-building freeform text
+- conformance should be checked in a scratch sheet before live Activity output is changed
+- a one-button QA run should render canonical scenarios and audit recent live Activity blocks against this spec
+
+Recommended implementation contract:
+- header input: reference, summary, context, status, headerError, linkInfo
+- sub-item input: sku, qty, uom, action, status, error, qtyColor, isParent, batchCount, nested
+- split-batch logic should be data-driven, not hard-coded per flow
+
+Recommended QA contract:
+- scratch preview tab name: Activity QA
+- scratch report tab name: Activity QA Report
+- live success should be measured as rule compliance, not just whether a row was written
+
+15. Non-Goals
+This spec does not define:
+- all downstream flow-detail tabs
+- raw webhook queue logging
+- adjustments tab structure
+- exact Apps Script implementation details
+- migration steps for historical rows
+
+16. Summary
+The target Activity tab is a strict, append-safe event timeline with:
+- a 2-row sheet header region
+- a 1-row data header
+- 6 canonical data columns
+- grouped event blocks only
+- no merged data rows
+- one-link-per-header discipline
+- a reserved coverage panel in H:O rows 1:2 only
+- scenario coverage for the major real-world entry patterns
+- split-batch support as a universal cross-flow rendering rule
+
+That is the intended standard for the Debug Sheet Activity tab.

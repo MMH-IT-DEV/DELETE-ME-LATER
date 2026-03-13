@@ -252,50 +252,6 @@ function computeCrossMatch_(sku, katanaTotals, waspTotals, source) {
   return 'MISMATCH';
 }
 
-function getKatanaTargetSiteLocation_(katanaLoc) {
-  var loc = String(katanaLoc || '').trim();
-  if (loc === 'Storage Warehouse') {
-    return { site: 'Storage Warehouse', location: 'SW-STORAGE' };
-  }
-  if (loc === 'MMH Mayfair') {
-    return { site: 'MMH Mayfair', location: 'QA-Hold-1' };
-  }
-  if (loc === 'MMH Kelowna') {
-    return { site: 'MMH Kelowna', location: 'MMH Kelowna' };
-  }
-  return {
-    site: 'MMH Kelowna',
-    location: loc || 'MMH Kelowna'
-  };
-}
-
-function computeKatanaTargetMatch_(row, waspBySkuLotSiteLoc, waspBySkuSiteLoc, waspTotals) {
-  var target = getKatanaTargetSiteLocation_(row.location);
-  var kQty = Math.round((parseFloat(row.qty) || 0) * 100) / 100;
-  var wQty = 0;
-  var hasWasp = false;
-
-  if (row.batch) {
-    var lotKey = row.sku + '|' + row.batch + '|' + target.site + '|' + target.location;
-    hasWasp = waspBySkuLotSiteLoc.hasOwnProperty(lotKey);
-    wQty = Math.round((waspBySkuLotSiteLoc[lotKey] || 0) * 100) / 100;
-  } else {
-    var siteLocKey = row.sku + '|' + target.site + '|' + target.location;
-    hasWasp = waspBySkuSiteLoc.hasOwnProperty(siteLocKey);
-    wQty = Math.round((waspBySkuSiteLoc[siteLocKey] || 0) * 100) / 100;
-  }
-
-  if (!hasWasp) {
-    if (!waspTotals.hasOwnProperty(row.sku)) return { match: 'KATANA ONLY', qty: '' };
-    if (kQty === 0) return { match: 'ZERO', qty: '' };
-    return { match: 'KATANA ONLY', qty: '' };
-  }
-
-  if (kQty === 0 && wQty === 0) return { match: 'ZERO', qty: wQty };
-  if (Math.abs(kQty - wQty) < 0.01) return { match: 'MATCH', qty: wQty };
-  return { match: 'MISMATCH', qty: wQty };
-}
-
 // Per-row match: lot rows compare per-lot, non-lot rows compare per-site
 // waspBySkuLot: { "SKU|lot": qty }, waspBySkuSite: { "SKU|siteName": qty }
 function computeRowMatch_(row, katanaTotals, waspTotals, waspBySkuLot, waspBySkuSite, source) {
@@ -366,7 +322,7 @@ function writeKatanaTab(ss, katanaData, batchData, waspData) {
 
   // Preserve Push status BEFORE clearing sheet
   var NUM_COLS = 15;
-  var preserveMap = {};  // sku|location|batch -> 'Push'
+  var preserveMap = {};  // sku -> 'Push'
   // Also preserve Adj Status pending rows
   var adjPendingMap = {};  // key -> { qty, origQty }
   if (sheet.getLastRow() > 1) {
@@ -374,10 +330,8 @@ function writeKatanaTab(ss, katanaData, batchData, waspData) {
     for (var ei = 0; ei < existingData.length; ei++) {
       var eSku = String(existingData[ei][0]).trim();
       var eStatus = String(existingData[ei][11]).trim().toUpperCase();
-      var eLocStatus = String(existingData[ei][2]).trim();
-      var eBatchStatus = String(existingData[ei][5]).trim();
       if (eSku && eStatus === 'PUSH') {
-        preserveMap[eSku + '|' + eLocStatus + '|' + eBatchStatus] = 'Push';
+        preserveMap[eSku] = 'Push';
       }
       var eAdjStatus = String(existingData[ei][13]).trim();
       if (eSku && (eAdjStatus === 'Pending' || eAdjStatus === 'ERROR')) {
@@ -418,7 +372,6 @@ function writeKatanaTab(ss, katanaData, batchData, waspData) {
 
   // Per-lot lookup: SKU|lot -> total WASP qty across all locations
   var waspBySkuLot = {};
-  var waspBySkuLotSiteLoc = {};
   if (waspData && waspData.items) {
     for (var wl = 0; wl < waspData.items.length; wl++) {
       var wItem = waspData.items[wl];
@@ -426,16 +379,12 @@ function writeKatanaTab(ss, katanaData, batchData, waspData) {
         var wlKey = wItem.itemNumber + '|' + wItem.lot;
         if (!waspBySkuLot[wlKey]) waspBySkuLot[wlKey] = 0;
         waspBySkuLot[wlKey] += (parseFloat(wItem.qtyAvailable) || 0);
-        var wlSiteLocKey = wItem.itemNumber + '|' + wItem.lot + '|' + (wItem.siteName || 'MMH Kelowna') + '|' + (wItem.locationCode || '');
-        if (!waspBySkuLotSiteLoc[wlSiteLocKey]) waspBySkuLotSiteLoc[wlSiteLocKey] = 0;
-        waspBySkuLotSiteLoc[wlSiteLocKey] += (parseFloat(wItem.qtyAvailable) || 0);
       }
     }
   }
 
   // Per-site lookup: SKU|siteName -> total WASP qty at that site (for non-lot comparison)
   var waspBySkuSite = {};
-  var waspBySkuSiteLoc = {};
   if (waspData && waspData.items) {
     var filteredForSite = filterWaspItemsForTotals_(waspData.items);
     for (var ws2 = 0; ws2 < filteredForSite.length; ws2++) {
@@ -444,9 +393,6 @@ function writeKatanaTab(ss, katanaData, batchData, waspData) {
         var wsKey = wsItem.itemNumber + '|' + (wsItem.siteName || WASP_DEFAULT_SITE || 'MMH Kelowna');
         if (!waspBySkuSite[wsKey]) waspBySkuSite[wsKey] = 0;
         waspBySkuSite[wsKey] += (parseFloat(wsItem.qtyAvailable) || 0);
-        var wsSiteLocKey = wsItem.itemNumber + '|' + (wsItem.siteName || WASP_DEFAULT_SITE || 'MMH Kelowna') + '|' + (wsItem.locationCode || '');
-        if (!waspBySkuSiteLoc[wsSiteLocKey]) waspBySkuSiteLoc[wsSiteLocKey] = 0;
-        waspBySkuSiteLoc[wsSiteLocKey] += (parseFloat(wsItem.qtyAvailable) || 0);
       }
     }
   }
@@ -529,27 +475,33 @@ function writeKatanaTab(ss, katanaData, batchData, waspData) {
       prevLoc = loc;
     }
 
-    var rowMatchInfo = computeKatanaTargetMatch_(row, waspBySkuLotSiteLoc, waspBySkuSiteLoc, waspTotals);
-    var match = rowMatchInfo.match;
-    var waspQty = rowMatchInfo.qty;
-    var rowKey = row.sku + '|' + row.location + '|' + row.batch;
+    var match = computeRowMatch_(row, katanaTotals, waspTotals, waspBySkuLot, waspBySkuSite, 'KATANA');
+
+    // WASP Qty: lot rows use per-lot lookup, non-lot rows use per-site lookup
+    var waspQty = '';
+    if (row.batch) {
+      var wLotKey = row.sku + '|' + row.batch;
+      waspQty = waspBySkuLot.hasOwnProperty(wLotKey) ? (Math.round((waspBySkuLot[wLotKey] || 0) * 100) / 100) : '';
+    } else if (row.location) {
+      var wSiteKey = row.sku + '|' + row.location;
+      waspQty = waspBySkuSite.hasOwnProperty(wSiteKey) ? (Math.round((waspBySkuSite[wSiteKey] || 0) * 100) / 100) : '';
+    } else if (waspTotals.hasOwnProperty(row.sku)) {
+      waspQty = Math.round((waspTotals[row.sku] || 0) * 100) / 100;
+    }
 
     // Determine WASP Status
     var waspStatus = '';
-    var rowCat = String(row.category || '').toUpperCase().trim();
-    var skipAutoSync = false;
-    for (var sc = 0; sc < AUTO_SYNC_SKIP_CATEGORIES.length; sc++) {
-      if (rowCat === AUTO_SYNC_SKIP_CATEGORIES[sc]) { skipAutoSync = true; break; }
-    }
-    if (preserveMap[rowKey]) {
-      waspStatus = preserveMap[rowKey];
-    } else if (match === 'MATCH' || match === 'ZERO') {
+    if (waspSkuSet[row.sku]) {
       waspStatus = 'Synced';
-    } else if (match === 'KATANA ONLY') {
-      waspStatus = skipAutoSync ? 'NEW' : 'Push';
-    } else if (waspSkuSet[row.sku]) {
-      waspStatus = 'Synced';
+    } else if (preserveMap[row.sku]) {
+      waspStatus = preserveMap[row.sku];
     } else {
+      // New item: auto-sync unless category is in skip list
+      var rowCat = String(row.category || '').toUpperCase().trim();
+      var skipAutoSync = false;
+      for (var sc = 0; sc < AUTO_SYNC_SKIP_CATEGORIES.length; sc++) {
+        if (rowCat === AUTO_SYNC_SKIP_CATEGORIES[sc]) { skipAutoSync = true; break; }
+      }
       waspStatus = skipAutoSync ? 'NEW' : 'Push';
     }
 

@@ -895,6 +895,7 @@ function syncSTToWasp(stId, stNumber, fromLocKatana, toLocKatana, rows, sheetRow
           isParent: true,
           batchCount: f3BatchCount
         });
+        f3pSubItems[f3pSubItems.length - 1].action = getActivityDisplayLocation_(sFrom.location) + ' -> ' + getActivityDisplayLocation_(sTo.location);
       }
 
       if (sItem.multiBatch) {
@@ -924,6 +925,11 @@ function syncSTToWasp(stId, stNumber, fromLocKatana, toLocKatana, rows, sheetRow
             + (sItem.expiry ? '  exp:' + sItem.expiry : ''),
           qtyColor: 'green'
         });
+        f3pSubItems[f3pSubItems.length - 1].action = buildActivityActionText_(
+          'move ' + getActivityDisplayLocation_(sFrom.location) + ' -> ' + getActivityDisplayLocation_(sTo.location),
+          sItem.lot,
+          sItem.expiry
+        );
       }
     }
     for (var e = 0; e < errors.length; e++) {
@@ -941,14 +947,24 @@ function syncSTToWasp(stId, stNumber, fromLocKatana, toLocKatana, rows, sheetRow
           + (eItem.expiry ? '  exp:' + eItem.expiry : ''),
         error: eItem.error
       });
+      f3pSubItems[f3pSubItems.length - 1].action = buildActivityActionText_(
+        'move ' + getActivityDisplayLocation_(eFrom.location) + ' -> ' + getActivityDisplayLocation_(eTo.location),
+        eItem.lot,
+        eItem.expiry
+      );
     }
 
     var f3pStatus = failedCount === 0 ? 'success' : syncedNow === 0 ? 'failed' : 'partial';
     var f3pDetail = stNumber + '  ' + totalItems + ' item' + (totalItems !== 1 ? 's' : '');
     if (failedCount > 0) f3pDetail += '  ' + failedCount + ' error' + (failedCount > 1 ? 's' : '');
+    stNumber = extractCanonicalActivityRef_(stNumber, 'ST-', stId);
+    f3pDetail = joinActivitySegments_([stNumber, buildActivityCountSummary_(totalItems, 'line', 'lines', 'moved')]);
 
     var f3pContext = f3HeaderLocs.fromLocation + ' @ ' + f3HeaderLocs.fromSite
       + ' → ' + f3HeaderLocs.toLocation + ' @ ' + f3HeaderLocs.toSite;
+    var f3FromLabel = f3HeaderLocs.fromLocation === 'Mixed source' ? 'mixed-source' : getActivityDisplayLocation_(f3HeaderLocs.fromLocation);
+    var f3ToLabel = f3HeaderLocs.toLocation === 'Mixed dest' ? 'mixed-dest' : getActivityDisplayLocation_(f3HeaderLocs.toLocation);
+    f3pContext = f3FromLabel + ' -> ' + f3ToLabel;
     var f3pExecId = logActivity('F3', f3pDetail, f3pStatus, f3pContext, f3pSubItems, {
       text: stNumber,
       url: getKatanaWebUrl('st', stId)
@@ -1168,6 +1184,7 @@ function reverseSTFromWasp(stId, stNumber, fromLocKatana, toLocKatana, rows, she
         f3SubItems.push({ sku: sItem.sku, qty: sItem.multiBatchTotal, uom: sItem.uom || '',
           success: true, status: '', action: toWasp.location + ' \u2192 ' + fromWasp.location,
           qtyColor: 'grey', isParent: true, batchCount: f3BatchCount });
+        f3SubItems[f3SubItems.length - 1].action = getActivityDisplayLocation_(toWasp.location) + ' -> ' + getActivityDisplayLocation_(fromWasp.location);
       }
       if (sItem.multiBatch) {
         var nestedAction = '';
@@ -1182,17 +1199,30 @@ function reverseSTFromWasp(stId, stNumber, fromLocKatana, toLocKatana, rows, she
             + (sItem.lot    ? '  lot:' + sItem.lot    : '')
             + (sItem.expiry ? '  exp:' + sItem.expiry : ''),
           qtyColor: 'green' });
+        f3SubItems[f3SubItems.length - 1].action = buildActivityActionText_(
+          'move ' + getActivityDisplayLocation_(toWasp.location) + ' -> ' + getActivityDisplayLocation_(fromWasp.location),
+          sItem.lot,
+          sItem.expiry
+        );
       }
     }
     for (var e = 0; e < errors.length; e++) {
       f3SubItems.push({ sku: errors[e].sku, qty: errors[e].qty || '', uom: errors[e].uom || '', success: false, status: 'Failed',
         action: toWasp.location + ' \u2192 ' + fromWasp.location, error: errors[e].error });
+      f3SubItems[f3SubItems.length - 1].action = buildActivityActionText_(
+        'move ' + getActivityDisplayLocation_(toWasp.location) + ' -> ' + getActivityDisplayLocation_(fromWasp.location),
+        errors[e].lot,
+        errors[e].expiry
+      );
     }
 
     var f3pStatus = failedCount === 0 ? 'success' : syncedNow === 0 ? 'failed' : 'partial';
     var f3pDetail = stNumber + ' (reversed)  ' + totalItems + ' item' + (totalItems !== 1 ? 's' : '');
     if (failedCount > 0) f3pDetail += '  ' + failedCount + ' error' + (failedCount > 1 ? 's' : '');
     var f3pContext = toWasp.location + ' @ ' + toWasp.site + ' \u2192 ' + fromWasp.location + ' @ ' + fromWasp.site;
+    stNumber = extractCanonicalActivityRef_(stNumber, 'ST-', stId);
+    f3pDetail = joinActivitySegments_([stNumber, buildActivityCountSummary_(totalItems, 'line', 'lines', 'reversed')]);
+    f3pContext = getActivityDisplayLocation_(toWasp.location) + ' -> ' + getActivityDisplayLocation_(fromWasp.location);
     logActivity('F3', f3pDetail, f3pStatus, f3pContext, f3SubItems, {
       text: stNumber, url: getKatanaWebUrl('st', stId)
     });

@@ -4,7 +4,6 @@
 
 var KATANA_BASE = 'https://api.katanamrp.com/v1';
 var TRACKED_LOCATIONS = ['MMH Kelowna', 'MMH Mayfair', 'Storage Warehouse'];
-var KATANA_MASTER_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 // Fallback conversion rates verified manually in Katana (Supply details tab).
 // Used when the API does not return unit_conversion_rate for a material/product.
@@ -40,73 +39,6 @@ var UOM_RATE_FALLBACK = {
   'NI-FIRE-BNKT':   4,    // 1 pack = 4 pc
   'INFBAG-160':     100   // 1 pack = 100 PC
 };
-
-function loadKatanaCacheAnyAge_(key) {
-  var props = PropertiesService.getScriptProperties();
-  var count = parseInt(props.getProperty(key + '_COUNT') || '0', 10);
-  if (count === 0) return null;
-
-  var json = '';
-  for (var i = 0; i < count; i++) {
-    json += (props.getProperty(key + '_' + i) || '');
-  }
-
-  try {
-    return {
-      savedAt: parseInt(props.getProperty(key + '_TS') || '0', 10),
-      data: JSON.parse(json)
-    };
-  } catch (e) {
-    Logger.log('Failed to parse Katana cache ' + key + ': ' + e.message);
-    return null;
-  }
-}
-
-function loadKatanaCacheFresh_(key, ttlMs) {
-  var cached = loadKatanaCacheAnyAge_(key);
-  if (!cached || !cached.savedAt) return null;
-  if ((new Date()).getTime() - cached.savedAt > ttlMs) return null;
-  return cached.data;
-}
-
-function saveKatanaCache_(key, data) {
-  var props = PropertiesService.getScriptProperties();
-  var oldCount = parseInt(props.getProperty(key + '_COUNT') || '0', 10);
-  for (var i = 0; i < oldCount; i++) {
-    props.deleteProperty(key + '_' + i);
-  }
-
-  var json = JSON.stringify(data);
-  var chunkSize = 8000;
-  var chunks = Math.ceil(json.length / chunkSize);
-  for (var c = 0; c < chunks; c++) {
-    props.setProperty(key + '_' + c, json.substring(c * chunkSize, (c + 1) * chunkSize));
-  }
-  props.setProperty(key + '_COUNT', String(chunks));
-  props.setProperty(key + '_TS', String((new Date()).getTime()));
-  Logger.log('Saved Katana cache ' + key + ' (' + chunks + ' chunks)');
-}
-
-function fetchKatanaCached_(key, ttlMs, fetchFn) {
-  var fresh = loadKatanaCacheFresh_(key, ttlMs);
-  if (fresh !== null) {
-    Logger.log('Using fresh Katana cache: ' + key);
-    return fresh;
-  }
-
-  try {
-    var data = fetchFn();
-    saveKatanaCache_(key, data);
-    return data;
-  } catch (e) {
-    var stale = loadKatanaCacheAnyAge_(key);
-    if (stale && stale.data !== null) {
-      Logger.log('Using stale Katana cache for ' + key + ' after fetch failure: ' + e.message);
-      return stale.data;
-    }
-    throw e;
-  }
-}
 
 function katanaFetch(endpoint, params) {
   var token = PropertiesService.getScriptProperties().getProperty('KATANA_API_KEY');
@@ -199,22 +131,13 @@ function capitalizeType(type) {
 }
 
 function fetchAllKatanaData() {
-  var locations = fetchKatanaCached_('KATANA_LOCATIONS', KATANA_MASTER_CACHE_TTL_MS, function() {
-    var rows = katanaFetch('/locations');
-    if (rows.data) rows = rows.data;
-    if (!Array.isArray(rows)) rows = [];
-    return rows;
-  });
+  var locations = katanaFetch('/locations');
+  if (locations.data) locations = locations.data;
+  if (!Array.isArray(locations)) locations = [];
 
-  var products = fetchKatanaCached_('KATANA_PRODUCTS', KATANA_MASTER_CACHE_TTL_MS, function() {
-    return katanaFetchAllPages('/products');
-  });
-  var materials = fetchKatanaCached_('KATANA_MATERIALS', KATANA_MASTER_CACHE_TTL_MS, function() {
-    return katanaFetchAllPages('/materials');
-  });
-  var variants = fetchKatanaCached_('KATANA_VARIANTS', KATANA_MASTER_CACHE_TTL_MS, function() {
-    return katanaFetchAllPages('/variants');
-  });
+  var products = katanaFetchAllPages('/products');
+  var materials = katanaFetchAllPages('/materials');
+  var variants = katanaFetchAllPages('/variants');
   var inventory = katanaFetchAllPages('/inventory');
 
   var locationMap = {};

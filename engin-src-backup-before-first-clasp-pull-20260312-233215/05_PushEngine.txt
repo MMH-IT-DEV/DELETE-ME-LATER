@@ -165,88 +165,66 @@ function pushToWasp() {
   SpreadsheetApp.flush();
 
   // Process DELETE rows (user typed DELETE in Status column)
-  // When any row for a SKU is marked DELETE, remove ALL rows for that SKU
-  // across every location — not just the single marked row.
   var rowsToDelete = [];
-
-  // Collect the set of SKUs marked for deletion
-  var deleteSkus = {};
   for (var dri = 0; dri < deleteRows.length; dri++) {
-    var dSku = String(data[deleteRows[dri]][0] || '').trim();
-    if (dSku) deleteSkus[dSku] = true;
-  }
+    var delRowIndex = deleteRows[dri];
+    var delRow = data[delRowIndex];
+    var delSheetRowNum = delRowIndex + 2;
+    var delSku = String(delRow[0]).trim();
+    // Wasp tab columns: [0]SKU [1]Name [2]Type [3]Site [4]Location [5]LotTracked [6]Lot [7]DateCode
+    //                   [8]UOM [9]K.Qty [10]OrigWASPQty [11]W.Qty [12]OrigSite [13]OrigLoc ...
+    var delSite = String(delRow[3]).trim();
+    var delLocation = String(delRow[4]).trim();
+    var delLot = String(delRow[6]).trim();
+    var delDateCode = '';
+    if (delRow[7] instanceof Date) {
+      var ddcY = delRow[7].getFullYear();
+      var ddcM = delRow[7].getMonth() + 1;
+      var ddcD = delRow[7].getDate();
+      delDateCode = ddcY + '-' + (ddcM < 10 ? '0' + ddcM : ddcM) + '-' + (ddcD < 10 ? '0' + ddcD : ddcD);
+    } else {
+      delDateCode = String(delRow[7] || '').trim();
+      if (delDateCode.indexOf('T') > -1) delDateCode = delDateCode.split('T')[0];
+    }
+    var delOrigQty = (delRow[10] instanceof Date) ? 0 : (parseFloat(delRow[10]) || 0);
 
-  if (Object.keys(deleteSkus).length > 0) {
-    var delDateStr = Utilities.formatDate(new Date(), 'America/Vancouver', 'yyyy-MM-dd');
-
-    // For each DELETE SKU, find ALL rows for it in the sheet (any location/lot)
-    for (var di2 = 0; di2 < data.length; di2++) {
-      var dRow = data[di2];
-      var dRowSku = String(dRow[0] || '').trim();
-      if (!dRowSku || !deleteSkus[dRowSku]) continue;
-      if (dRowSku.indexOf(' > ') > -1) continue; // skip separator rows
-
-      var dSheetRowNum = di2 + 2;
-      var dSite     = String(dRow[3] || '').trim();
-      var dLocation = String(dRow[4] || '').trim();
-      var dLot      = String(dRow[6] || '').trim();
-      var dDateCode = '';
-      if (dRow[7] instanceof Date) {
-        var ddY = dRow[7].getFullYear(), ddM = dRow[7].getMonth() + 1, ddD = dRow[7].getDate();
-        dDateCode = ddY + '-' + (ddM < 10 ? '0' + ddM : ddM) + '-' + (ddD < 10 ? '0' + ddD : ddD);
-      } else {
-        dDateCode = String(dRow[7] || '').trim();
-        if (dDateCode.indexOf('T') > -1) dDateCode = dDateCode.split('T')[0];
-      }
-      // Use W.Qty (index 11) — the current sheet qty — not the Orig baseline (index 10)
-      var dWQty = (dRow[11] instanceof Date) ? 0 : (parseFloat(dRow[11]) || 0);
-
-      if (dWQty > 0 && dSite) {
-        Logger.log('DELETE ' + dRowSku + ' row ' + dSheetRowNum + ': REMOVE ' + dWQty + ' from ' + dSite + '/' + dLocation);
-        var dAction = {
-          type: 'REMOVE',
-          sku: dRowSku,
-          qty: dWQty,
-          site: dSite,
-          location: dLocation,
-          lot: dLot,
-          dateCode: dDateCode,
-          _rowLot: dLot,
-          _rowDateCode: dDateCode,
-          notes: 'Sheet DELETE ' + delDateStr
-        };
-        var dResult = executeAction_(dAction);
-        if (dResult.success) {
-          successCount++;
-          rowsToDelete.push(dSheetRowNum);
-          Logger.log('DELETE ' + dRowSku + ' row ' + dSheetRowNum + ' REMOVE success');
-          logAdjustment_(ss, 'Sync Sheet', 'Remove', activeUser, dRowSku, '', dSite, dLocation, dLot, dDateCode, -dWQty, 'OK');
-        } else {
-          errorCount++;
-          var dErrRaw = String(dResult.error || '');
-          var dErrClean = dErrRaw;
-          try {
-            var dErrObj = JSON.parse(dErrRaw);
-            var dMsgs = dErrObj.Messages || [];
-            if (dMsgs.length > 0) dErrClean = dMsgs[0].Message + ' (' + dMsgs[0].ResultCode + ')';
-          } catch (ep2) {}
-          errorDetails.push(dRowSku + ' @ ' + dLocation + ': ' + dErrClean);
-          Logger.log('DELETE ' + dRowSku + ' row ' + dSheetRowNum + ' FAILED: ' + dErrClean);
-          logAdjustment_(ss, 'Sync Sheet', 'Remove', activeUser, dRowSku, '', dSite, dLocation, dLot, dDateCode, -dWQty, 'ERROR');
-          data[di2][15] = 'ERROR';
-          for (var dbg = 0; dbg < NUM_COLS; dbg++) {
-            backgrounds[di2][dbg] = '#ffcdd2';
-          }
-        }
-      } else {
-        // W.Qty = 0 — no stock to remove, just mark row for sheet deletion
+    if (delOrigQty > 0 && delSku) {
+      Logger.log('DELETE row ' + delSheetRowNum + ': REMOVE ' + delOrigQty + ' of ' + delSku + ' from ' + delSite + '/' + delLocation);
+      var delAction = {
+        type: 'REMOVE',
+        sku: delSku,
+        qty: delOrigQty,
+        site: delSite,
+        location: delLocation,
+        lot: delLot,
+        dateCode: delDateCode,
+        _rowLot: delLot,
+        _rowDateCode: delDateCode,
+        notes: 'Sheet push DELETE ' + Utilities.formatDate(new Date(), 'America/Vancouver', 'yyyy-MM-dd')
+      };
+      var delResult = executeAction_(delAction);
+      if (delResult.success) {
         successCount++;
-        rowsToDelete.push(dSheetRowNum);
+        rowsToDelete.push(delSheetRowNum);
+        Logger.log('DELETE row ' + delSheetRowNum + ' REMOVE success');
+        logAdjustment_(ss, 'Sync Sheet', 'Remove', activeUser, delSku, '', delSite, delLocation, delLot, delDateCode, -delOrigQty, 'OK');
+      } else {
+        errorCount++;
+        errorDetails.push('Row ' + delSheetRowNum + ' (' + delSku + '): DELETE failed - ' + delResult.error);
+        Logger.log('DELETE row ' + delSheetRowNum + ' REMOVE failed: ' + delResult.error);
+        logAdjustment_(ss, 'Sync Sheet', 'Remove', activeUser, delSku, '', delSite, delLocation, delLot, delDateCode, -delOrigQty, 'ERROR');
+        data[delRowIndex][15] = 'ERROR';
+        for (var dbg = 0; dbg < NUM_COLS; dbg++) {
+          backgrounds[delRowIndex][dbg] = '#ffcdd2';
+        }
       }
+    } else {
+      // No stock to remove, just delete the row
+      rowsToDelete.push(delSheetRowNum);
+      successCount++;
     }
 
-    // Note: WASP API does not expose a catalog delete endpoint (all ic/item/delete paths 404).
-    // Stock removal + sheet row deletion is the complete DELETE behavior.
+    if ((dri + 1) % 10 === 0) Utilities.sleep(500);
   }
 
   // Write back status for failed DELETEs
@@ -535,12 +513,8 @@ function computeRowActions_(row, rowIndex) {
  * @return {Object} { success: boolean, error: string }
  */
 function executeAction_(action) {
-  // Note: enginPreMark_ is called inside waspAddInventory / waspRemoveInventory (and their lot variants),
-  // so there is no need to call it here. Calling it twice adds ~7s of HTTP overhead per action.
-
   var notes = action.notes || ('Sheet push ' + Utilities.formatDate(new Date(), 'America/Vancouver', 'yyyy-MM-dd'));
   var site = action.site || WASP_DEFAULT_SITE;
-  var defaultCreateLocation = site === 'MMH Mayfair' ? 'QA-Hold-1' : 'UNSORTED';
   var result;
 
   if (action.type === 'ADD') {
@@ -557,12 +531,14 @@ function executeAction_(action) {
     }
   } else if (action.type === 'UPDATE_LOT_TRACKING') {
     result = waspUpdateItemLotTracking(action.sku, action.lotTracking);
-  } else if (action.type === 'SKIP') {
-    // Zero-qty manifest entry — nothing to remove from WASP, just clean the manifest
-    result = { success: true, response: 'skipped (zero qty)' };
+  } else if (action.type === 'DELETE_ITEM') {
+    // Delete item from WASP catalog
+    var deleteUrl = getWaspBase() + 'ic/item/delete';
+    var deletePayload = { ItemNumber: action.sku };
+    result = waspApiCall(deleteUrl, deletePayload);
   } else if (action.type === 'CREATE') {
     // Create new item in WASP catalog, then add stock
-    var createResult = waspCreateItem(action.sku, action.name || action.sku, action.site || WASP_DEFAULT_SITE, action.location || defaultCreateLocation, action.lotTracking || false, action.uom || '', action.salesPrice || 0);
+    var createResult = waspCreateItem(action.sku, action.name || action.sku, action.site || WASP_DEFAULT_SITE, action.location || 'UNSORTED', action.lotTracking || false, action.uom || '', action.salesPrice || 0);
     if (!createResult.success) {
       // Item likely already exists — always proceed to ADD
       // If item truly doesn't exist, the ADD will fail with a clear error
@@ -788,8 +764,8 @@ function detectDeletedRows_(sheet, lastRow, numCols) {
     var parts = mKey.split('|');
 
     // If entry has qty > 0: generate REMOVE action
-    // If entry has qty === 0: nothing to remove from WASP — skip API call, just clean manifest
-    var actionType = (entry.q && entry.q > 0) ? 'REMOVE' : 'SKIP';
+    // If entry has qty === 0: generate DELETE_ITEM action (delete from WASP catalog)
+    var actionType = (entry.q && entry.q > 0) ? 'REMOVE' : 'DELETE_ITEM';
 
     // Always include lot/dateCode from manifest — don't gate on lt flag
     // (item may have become lot-tracked in WASP since manifest was saved)
@@ -1279,12 +1255,18 @@ function pushKatanaSyncRows_(ss) {
     var sku = String(data[i][0]).trim();
     if (!sku || sku.indexOf(' > ') > -1) continue; // skip separators
 
-    // Direct Katana-location routing for sync push
+    // Smart location routing: type + Katana location
     var katanaLoc = String(data[i][2]).trim();  // col C
-    var itemType = String(data[i][3]).trim();   // col D
-    var katanaRoute = getKatanaPushTarget_(katanaLoc);
-    var targetSite = katanaRoute.site;
-    var targetLocation = katanaRoute.location;
+    var itemType = String(data[i][3]).trim();    // col D
+    var targetSite = 'MMH Kelowna';
+    var targetLocation = 'UNSORTED';
+
+    if (katanaLoc === 'Storage Warehouse') {
+      targetSite = 'Storage Warehouse';
+      targetLocation = 'SW-STORAGE';
+    } else if (itemType === 'Material' || itemType === 'Intermediate') {
+      targetLocation = 'PRODUCTION';
+    }
 
     if (!syncSkus[sku]) {
       syncSkus[sku] = {
@@ -1593,15 +1575,11 @@ function pushKatanaAdjustments_(ss) {
 
         var name = String(row[1]).trim();
         var katanaLoc = String(row[2]).trim();
-        var matchStatus = String(row[10] || '').trim();
-        var waspStatus = String(row[11] || '').trim();
         // col D (row[3]) = Katana category (PACKAGING, RAW MATER, etc.) — for display only
         // col O (row[14]) = Katana item type (Material, Intermediate, Product) — used for WASP location routing
         var itemType = String(row[14] || row[3] || '').trim();
         var lotTracked = String(row[4]).trim() === 'Yes';
         var batch = String(row[5]).trim();
-        var uom = String(row[7] || '').trim();
-        var katanaQty = (row[8] instanceof Date) ? 0 : (parseFloat(row[8]) || 0);
         var expiry = '';
         if (row[6] instanceof Date) {
             var eY = row[6].getFullYear();
@@ -1617,37 +1595,44 @@ function pushKatanaAdjustments_(ss) {
         // WASP Qty is now the editable column (row[9]); orig WASP value is in row[12]
         var origQty = (row[12] instanceof Date) ? 0 : (parseFloat(row[12]) || 0);
 
-        // Direct Katana-location routing for adjustment push
-        var katanaRoute = getKatanaPushTarget_(katanaLoc);
-        var targetSite = katanaRoute.site;
-        var targetLocation = katanaRoute.location;
+        // Smart location routing (default)
+        var targetSite = 'MMH Kelowna';
+        var targetLocation = 'UNSORTED';
+        if (katanaLoc === 'Storage Warehouse') {
+            targetSite = 'Storage Warehouse';
+            targetLocation = 'SW-STORAGE';
+        } else if (itemType === 'Material' || itemType === 'Intermediate') {
+            targetLocation = 'PRODUCTION';
+        }
 
-        // For REMOVE deltas: look up actual WASP location.
+        // For lot-tracked rows, look up actual WASP location (smart routing may guess wrong)
+        if (lotTracked && batch) {
+            try {
+                var searchResult = waspFetch('ic/item/advancedinventorysearch', {
+                    ItemNumber: sku, Lot: batch, PageSize: 20, PageNumber: 1
+                });
+                var sItems = searchResult.Items || searchResult.items || [];
+                for (var si = 0; si < sItems.length; si++) {
+                    var sItem = sItems[si];
+                    var sLot = String(sItem.Lot || sItem.lot || '').trim();
+                    var sQty = parseFloat(sItem.TotalInHouse || sItem.Quantity || sItem.TotalAvailable || 0);
+                    if (sLot === batch && sQty > 0) {
+                        targetSite = sItem.SiteName || sItem.siteName || targetSite;
+                        targetLocation = sItem.LocationCode || sItem.locationCode || targetLocation;
+                        Logger.log('Katana adj: found ' + sku + '/' + batch + ' at ' + targetSite + '/' + targetLocation + ' qty=' + sQty);
+                        break;
+                    }
+                }
+            } catch (lookupErr) {
+                Logger.log('Katana adj: WASP lookup failed for ' + sku + '/' + batch + ': ' + lookupErr.message);
+            }
+        }
+
+        // For REMOVE deltas: look up actual WASP location regardless of lot-tracking.
         // Smart routing (PACKAGING→UNSORTED, etc.) may guess wrong, causing -46002.
-        // For positive ADD deltas we keep the direct Katana route on purpose.
+        // This runs after the lot-based lookup above so it can override if needed.
         var deltaCheck = editedQty - origQty;
         if (deltaCheck < 0) {
-            if (lotTracked && batch) {
-                try {
-                    var searchResult = waspFetch('ic/item/advancedinventorysearch', {
-                        ItemNumber: sku, Lot: batch, PageSize: 20, PageNumber: 1
-                    });
-                    var sItems = searchResult.Items || searchResult.items || [];
-                    for (var si = 0; si < sItems.length; si++) {
-                        var sItem = sItems[si];
-                        var sLot = String(sItem.Lot || sItem.lot || '').trim();
-                        var sQty = parseFloat(sItem.TotalInHouse || sItem.Quantity || sItem.TotalAvailable || 0);
-                        if (sLot === batch && sQty > 0) {
-                            targetSite = sItem.SiteName || sItem.siteName || targetSite;
-                            targetLocation = sItem.LocationCode || sItem.locationCode || targetLocation;
-                            Logger.log('Katana adj: found ' + sku + '/' + batch + ' at ' + targetSite + '/' + targetLocation + ' qty=' + sQty);
-                            break;
-                        }
-                    }
-                } catch (lookupErr) {
-                    Logger.log('Katana adj: WASP lookup failed for ' + sku + '/' + batch + ': ' + lookupErr.message);
-                }
-            }
             try {
                 var preSearch = waspFetch('ic/item/advancedinventorysearch', {
                     ItemNumber: sku, PageSize: 50, PageNumber: 1
@@ -1687,30 +1672,6 @@ function pushKatanaAdjustments_(ss) {
 
         Logger.log('Katana adj row ' + sheetRowNum + ': ' + sku + ' delta=' + delta);
 
-        var shouldCreateCatalogItem = delta > 0 && (matchStatus === 'KATANA ONLY' || waspStatus === 'NEW');
-        if (shouldCreateCatalogItem) {
-            try {
-                var createResult = createWaspCatalogItem_(
-                    sku,
-                    name || sku,
-                    targetSite,
-                    targetLocation,
-                    lotTracked,
-                    uom,
-                    0,
-                    0
-                );
-                if (!createResult.success) {
-                    Logger.log(
-                        'Katana adj row ' + sheetRowNum + ': create item returned non-success for ' + sku +
-                        ' — continuing to stock add: ' + String(createResult.response || createResult.error || '').substring(0, 200)
-                    );
-                }
-            } catch (createErr) {
-                Logger.log('Katana adj row ' + sheetRowNum + ': create item threw for ' + sku + ' — continuing to stock add: ' + createErr.message);
-            }
-        }
-
         var action;
         if (delta > 0) {
             action = {
@@ -1745,10 +1706,6 @@ function pushKatanaAdjustments_(ss) {
         if (actionResult.success) {
             data[rowIndex][13] = 'Pushed ' + formatTimestamp();
             data[rowIndex][12] = editedQty;  // update orig qty to new value
-            data[rowIndex][10] = computeKatanaAdjustmentMatchStatus_(katanaQty, editedQty);
-            if (shouldCreateCatalogItem || waspStatus === 'Push' || waspStatus === 'NEW' || waspStatus === 'ERROR') {
-                data[rowIndex][11] = 'Synced';
-            }
             for (var bg2 = 0; bg2 < KATANA_COLS; bg2++) {
                 backgrounds[rowIndex][bg2] = '#ffffff';
             }
@@ -1756,9 +1713,6 @@ function pushKatanaAdjustments_(ss) {
             logAdjustment_(ss, 'Google Sheet', (action.type === 'ADD' ? 'Add' : 'Remove'), activeUser, sku, '', targetSite, targetLocation, batch, expiry, Math.round((editedQty - origQty) * 100) / 100, 'OK');
         } else {
             data[rowIndex][13] = 'ERROR';
-            if (shouldCreateCatalogItem) {
-                data[rowIndex][11] = 'ERROR';
-            }
             for (var bg3 = 0; bg3 < KATANA_COLS; bg3++) {
                 backgrounds[rowIndex][bg3] = '#ffcdd2';
             }
@@ -1783,31 +1737,6 @@ function pushKatanaAdjustments_(ss) {
 
     Logger.log('Katana adj push complete: ' + result.success + ' success, ' + result.errors + ' errors');
     return result;
-}
-
-function computeKatanaAdjustmentMatchStatus_(katanaQty, waspQty) {
-  var kQty = parseFloat(katanaQty) || 0;
-  var wQty = parseFloat(waspQty) || 0;
-  if (Math.abs(kQty) < 0.01 && Math.abs(wQty) < 0.01) return 'ZERO';
-  if (Math.abs(kQty - wQty) < 0.01) return 'MATCH';
-  return 'MISMATCH';
-}
-
-function getKatanaPushTarget_(katanaLoc) {
-  var loc = String(katanaLoc || '').trim();
-  if (loc === 'Storage Warehouse') {
-    return { site: 'Storage Warehouse', location: 'SW-STORAGE' };
-  }
-  if (loc === 'MMH Mayfair') {
-    return { site: 'MMH Mayfair', location: 'QA-Hold-1' };
-  }
-  if (loc === 'MMH Kelowna') {
-    return { site: 'MMH Kelowna', location: 'MMH Kelowna' };
-  }
-  return {
-    site: WASP_DEFAULT_SITE,
-    location: loc || 'MMH Kelowna'
-  };
 }
 
 // ============================================
@@ -1869,7 +1798,7 @@ function createWaspCatalogItem_(sku, name, site, location, lotTracking, uom, sal
   }
 
   var targetSite = site || WASP_DEFAULT_SITE;
-  var targetLoc = location || (targetSite === 'MMH Mayfair' ? 'QA-Hold-1' : '');
+  var targetLoc = location || '';
   if (targetLoc) {
     item.ItemLocationSettings = [{
       SiteName: targetSite,
@@ -1885,214 +1814,4 @@ function createWaspCatalogItem_(sku, name, site, location, lotTracking, uom, sal
 
   var payload = [item];
   return waspApiCall(url, payload);
-}
-
-// ============================================
-// AUTO-ADJUST WASP (ADJUSTABLE rows only)
-// ============================================
-
-/**
- * Automatically adjust WASP inventory for all ADJUSTABLE rows to match Katana.
- * ADJUSTABLE = truly mismatched, non-lot-tracked, no UOM conversion.
- *
- * ADD delta  → add to dominant location (highest W.Qty).
- * REMOVE delta → drain from locations sorted highest-to-lowest until delta satisfied.
- *   This avoids -46002 "insufficient qty" errors when stock is spread across locations.
- *
- * Called from menu: Katana Sync > Auto-Adjust WASP
- */
-function autoAdjustWasp() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName('Wasp');
-  if (!sheet) {
-    SpreadsheetApp.getUi().alert('Wasp sheet not found.');
-    return;
-  }
-
-  var lastRow = sheet.getLastRow();
-  if (lastRow < 2) {
-    ss.toast('No data in Wasp sheet.', 'Auto-Adjust', 5);
-    return;
-  }
-
-  var NUM_COLS = 18;
-  var data = sheet.getRange(2, 1, lastRow - 1, NUM_COLS).getValues();
-
-  var activeUser = '';
-  try { activeUser = Session.getActiveUser().getEmail(); } catch (e) {}
-  if (!activeUser) { try { activeUser = Session.getEffectiveUser().getEmail(); } catch (e) {} }
-  if (!activeUser) { activeUser = PropertiesService.getScriptProperties().getProperty('USER_NAME') || ''; }
-
-  var dateStr = Utilities.formatDate(new Date(), 'America/Vancouver', 'yyyy-MM-dd');
-
-  // Pass 1: build SKU+site groups from ADJUSTABLE rows only
-  var groups = {};
-  for (var i = 0; i < data.length; i++) {
-    var row = data[i];
-    var sku = String(row[0] || '').trim();
-    var match = String(row[14] || '').trim();
-    if (!sku || sku.indexOf(' > ') > -1 || match !== 'ADJUSTABLE') continue;
-
-    var site = String(row[3] || '').trim();
-    var location = String(row[4] || '').trim();
-    var kQty = (row[9] instanceof Date) ? 0 : (parseFloat(row[9]) || 0);
-    var wQty = (row[11] instanceof Date) ? 0 : (parseFloat(row[11]) || 0);
-
-    var key = sku + '|' + site;
-    if (!groups[key]) {
-      groups[key] = { sku: sku, site: site, kQty: kQty, wTotal: 0, rows: [] };
-    }
-    groups[key].wTotal += wQty;
-    groups[key].rows.push({ wQty: wQty, location: location });
-  }
-
-  var groupKeys = Object.keys(groups);
-  if (groupKeys.length === 0) {
-    ss.toast('No ADJUSTABLE rows found. Run Sync Now first.', 'Auto-Adjust', 5);
-    return;
-  }
-
-  var successCount = 0;
-  var errorCount = 0;
-  var errorDetails = [];
-  var skippedCount = 0;
-  var startTime = new Date();
-  var TIME_LIMIT_MS = 330000; // 5.5 minutes — safe under GAS 6-min limit
-
-  Logger.log('autoAdjustWasp: starting ' + groupKeys.length + ' groups');
-  try { ss.toast('Starting ' + groupKeys.length + ' adjustments...', 'Auto-Adjust', 5); } catch (e) {}
-
-  // Pass 2: apply adjustments per group
-  for (var g = 0; g < groupKeys.length; g++) {
-    // Time-limit safety: stop before GAS kills the execution
-    if ((new Date() - startTime) > TIME_LIMIT_MS) {
-      var remaining = groupKeys.length - g;
-      Logger.log('autoAdjustWasp: time limit reached with ' + remaining + ' groups remaining');
-      try {
-        ss.toast(successCount + ' done, ' + remaining + ' remaining — re-run to continue.', 'Auto-Adjust Paused', 10);
-      } catch (e) {}
-      return;
-    }
-
-    var grp = groups[groupKeys[g]];
-    var delta = Math.round((grp.kQty - grp.wTotal) * 10000) / 10000;
-
-    if (Math.abs(delta) < 0.01) {
-      skippedCount++;
-      continue;
-    }
-
-    // Progress toast every 10 items
-    if (g > 0 && g % 10 === 0) {
-      try { ss.toast(successCount + ' done, processing ' + (g + 1) + '/' + groupKeys.length + '...', 'Auto-Adjust', 4); } catch (e) {}
-    }
-
-    // Find dominant (highest W.Qty) — used for ADD target
-    var dominantRow = grp.rows[0];
-    for (var r = 1; r < grp.rows.length; r++) {
-      if (grp.rows[r].wQty > dominantRow.wQty) dominantRow = grp.rows[r];
-    }
-
-    var groupSuccess = true;
-    var groupError = '';
-
-    if (delta > 0) {
-      // ADD: put the full delta into the dominant location
-      var addAction = {
-        type: 'ADD',
-        sku: grp.sku,
-        qty: delta,
-        site: grp.site,
-        location: dominantRow.location,
-        lot: '', dateCode: '', _rowLot: '', _rowDateCode: '',
-        notes: 'Auto-adjust add ' + dateStr
-      };
-      Logger.log('[' + (g + 1) + '/' + groupKeys.length + '] ADD ' + delta +
-                 ' of ' + grp.sku + ' @ ' + grp.site + '/' + dominantRow.location +
-                 ' (K=' + grp.kQty + ' W=' + grp.wTotal + ')');
-      var addResult = executeAction_(addAction);
-      if (!addResult.success) { groupSuccess = false; groupError = addResult.error; }
-
-    } else {
-      // REMOVE: drain from locations sorted highest-to-lowest until delta is satisfied.
-      // This avoids trying to remove more than any single location holds.
-      var rowsSorted = grp.rows.slice().sort(function(a, b) { return b.wQty - a.wQty; });
-      var toRemove = Math.abs(delta);
-
-      Logger.log('[' + (g + 1) + '/' + groupKeys.length + '] REMOVE ' + toRemove +
-                 ' of ' + grp.sku + ' @ ' + grp.site +
-                 ' across ' + rowsSorted.length + ' location(s)' +
-                 ' (K=' + grp.kQty + ' W=' + grp.wTotal + ')');
-
-      for (var rd = 0; rd < rowsSorted.length && toRemove > 0.01; rd++) {
-        var locRow = rowsSorted[rd];
-        if (locRow.wQty <= 0) continue;
-
-        var removeQty = Math.min(
-          Math.round(locRow.wQty * 10000) / 10000,
-          Math.round(toRemove * 10000) / 10000
-        );
-
-        var removeAction = {
-          type: 'REMOVE',
-          sku: grp.sku,
-          qty: removeQty,
-          site: grp.site,
-          location: locRow.location,
-          lot: '', dateCode: '', _rowLot: '', _rowDateCode: '',
-          notes: 'Auto-adjust remove ' + dateStr
-        };
-        Logger.log('  -> REMOVE ' + removeQty + ' from ' + locRow.location + ' (has ' + locRow.wQty + ')');
-        var remResult = executeAction_(removeAction);
-        if (remResult.success) {
-          toRemove = Math.round((toRemove - removeQty) * 10000) / 10000;
-        } else {
-          groupSuccess = false;
-          // Clean up the error message — strip raw JSON, show just the WASP message
-          var rawErr = String(remResult.error || '');
-          var cleanErr = rawErr;
-          try {
-            var errObj = JSON.parse(rawErr);
-            var msgs = (errObj.Messages || []);
-            if (msgs.length > 0) cleanErr = msgs[0].Message + ' (' + msgs[0].ResultCode + ')';
-          } catch (ep) { /* keep rawErr as-is if not JSON */ }
-          groupError = cleanErr;
-          Logger.log('  -> FAILED at ' + locRow.location + ': ' + cleanErr);
-          break;
-        }
-      }
-    }
-
-    if (groupSuccess) {
-      successCount++;
-      var logAction = delta > 0 ? 'Add' : 'Remove';
-      logAdjustment_(ss, 'Auto-Adjust', logAction, activeUser, grp.sku, '',
-                     grp.site, dominantRow.location, '', '',
-                     Math.round(delta * 100) / 100, 'OK');
-    } else {
-      errorCount++;
-      errorDetails.push(grp.sku + ': ' + groupError);
-      Logger.log('autoAdjustWasp ERROR: ' + grp.sku + ' — ' + groupError);
-      logAdjustment_(ss, 'Auto-Adjust', delta > 0 ? 'Add' : 'Remove', activeUser,
-                     grp.sku, '', grp.site, dominantRow.location, '', '',
-                     Math.round(delta * 100) / 100, 'ERROR');
-    }
-  }
-
-  var duration = Math.round((new Date() - startTime) / 1000);
-  var msg = successCount + ' adjusted';
-  if (skippedCount > 0) msg += ', ' + skippedCount + ' skipped';
-  if (errorCount > 0)   msg += ', ' + errorCount + ' errors';
-  msg += ' (' + duration + 's)';
-  Logger.log('autoAdjustWasp complete: ' + msg);
-
-  try {
-    ss.toast(msg + '. Run Sync Now to refresh.', 'Auto-Adjust Complete', 10);
-  } catch (e) {
-    Logger.log('Toast failed: ' + e.message);
-  }
-
-  if (errorDetails.length > 0 && errorDetails.length <= 10) {
-    SpreadsheetApp.getUi().alert('Auto-Adjust errors:\n' + errorDetails.join('\n'));
-  }
 }

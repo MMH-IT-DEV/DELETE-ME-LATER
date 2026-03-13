@@ -3,110 +3,7 @@
  */
 
 var KATANA_BASE = 'https://api.katanamrp.com/v1';
-var TRACKED_LOCATIONS = ['MMH Kelowna', 'MMH Mayfair', 'Storage Warehouse'];
-var KATANA_MASTER_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
-
-// Fallback conversion rates verified manually in Katana (Supply details tab).
-// Used when the API does not return unit_conversion_rate for a material/product.
-// Format: SKU → number of stock units per 1 purchase unit.
-var UOM_RATE_FALLBACK = {
-  // Essential oils & wax: kg → g
-  'B-PROP':      1000,  // 1 kg = 1000 g
-  'B-WAX':       1000,  // 1 kg = 1000 g
-  'EO-CB':       1000,  // 1 kg = 1000 g
-  'EO-CS':       1000,  // 1 kg = 1000 g
-  'EO-LAV':      1000,  // 1 kg = 1000 g
-  'EO-PEP':      1000,  // 1 kg = 1000 g
-  'EO-THY':      1000,  // 1 kg = 1000 g
-  'EO-TT':       1000,  // 1 kg = 1000 g
-  // Herbs: lbs → g
-  'H-ARNF':      454,   // 1 lbs = 454 g
-  'H-COML':      454,   // 1 lbs = 454 g
-  // Eggs: dozen → pcs
-  'EGG-X':       12,    // 1 dozen = 12 pcs
-  // Labels (confirmed from Katana supply details)
-  'FBA-BARCODE': 500,   // 1 pack = 500 PC
-  'FBA-FRAGILE': 500,   // 1 pack = 500 PC
-  // Non-inventory consumables (confirmed via browser agent)
-  'NI-ATPSWABS':    100,  // 1 BOX = 100 EA
-  'NI-NAPKINS':     12,   // 1 box = 12 pack
-  'NI-GLOVEMD':     200,  // 1 pack = 200 EA
-  'NI-GLOVESM':     200,  // 1 pack = 200 EA
-  'NI-GLOVELR':     200,  // 1 pack = 200 EA
-  'NI-GLOVECR':     200,  // 1 pack = 200 EA
-  'NI-STEELWOOL':   16,   // 1 pack = 16 PC
-  'NI-PAPERTOWEL8': 8,    // 1 pcs = 8 ROLLS
-  'NI-SCRUB-10':    10,   // 1 pack = 10 pc
-  'NI-FIRE-BNKT':   4,    // 1 pack = 4 pc
-  'INFBAG-160':     100   // 1 pack = 100 PC
-};
-
-function loadKatanaCacheAnyAge_(key) {
-  var props = PropertiesService.getScriptProperties();
-  var count = parseInt(props.getProperty(key + '_COUNT') || '0', 10);
-  if (count === 0) return null;
-
-  var json = '';
-  for (var i = 0; i < count; i++) {
-    json += (props.getProperty(key + '_' + i) || '');
-  }
-
-  try {
-    return {
-      savedAt: parseInt(props.getProperty(key + '_TS') || '0', 10),
-      data: JSON.parse(json)
-    };
-  } catch (e) {
-    Logger.log('Failed to parse Katana cache ' + key + ': ' + e.message);
-    return null;
-  }
-}
-
-function loadKatanaCacheFresh_(key, ttlMs) {
-  var cached = loadKatanaCacheAnyAge_(key);
-  if (!cached || !cached.savedAt) return null;
-  if ((new Date()).getTime() - cached.savedAt > ttlMs) return null;
-  return cached.data;
-}
-
-function saveKatanaCache_(key, data) {
-  var props = PropertiesService.getScriptProperties();
-  var oldCount = parseInt(props.getProperty(key + '_COUNT') || '0', 10);
-  for (var i = 0; i < oldCount; i++) {
-    props.deleteProperty(key + '_' + i);
-  }
-
-  var json = JSON.stringify(data);
-  var chunkSize = 8000;
-  var chunks = Math.ceil(json.length / chunkSize);
-  for (var c = 0; c < chunks; c++) {
-    props.setProperty(key + '_' + c, json.substring(c * chunkSize, (c + 1) * chunkSize));
-  }
-  props.setProperty(key + '_COUNT', String(chunks));
-  props.setProperty(key + '_TS', String((new Date()).getTime()));
-  Logger.log('Saved Katana cache ' + key + ' (' + chunks + ' chunks)');
-}
-
-function fetchKatanaCached_(key, ttlMs, fetchFn) {
-  var fresh = loadKatanaCacheFresh_(key, ttlMs);
-  if (fresh !== null) {
-    Logger.log('Using fresh Katana cache: ' + key);
-    return fresh;
-  }
-
-  try {
-    var data = fetchFn();
-    saveKatanaCache_(key, data);
-    return data;
-  } catch (e) {
-    var stale = loadKatanaCacheAnyAge_(key);
-    if (stale && stale.data !== null) {
-      Logger.log('Using stale Katana cache for ' + key + ' after fetch failure: ' + e.message);
-      return stale.data;
-    }
-    throw e;
-  }
-}
+var TRACKED_LOCATIONS = ['MMH Kelowna', 'Storage Warehouse'];
 
 function katanaFetch(endpoint, params) {
   var token = PropertiesService.getScriptProperties().getProperty('KATANA_API_KEY');
@@ -199,22 +96,13 @@ function capitalizeType(type) {
 }
 
 function fetchAllKatanaData() {
-  var locations = fetchKatanaCached_('KATANA_LOCATIONS', KATANA_MASTER_CACHE_TTL_MS, function() {
-    var rows = katanaFetch('/locations');
-    if (rows.data) rows = rows.data;
-    if (!Array.isArray(rows)) rows = [];
-    return rows;
-  });
+  var locations = katanaFetch('/locations');
+  if (locations.data) locations = locations.data;
+  if (!Array.isArray(locations)) locations = [];
 
-  var products = fetchKatanaCached_('KATANA_PRODUCTS', KATANA_MASTER_CACHE_TTL_MS, function() {
-    return katanaFetchAllPages('/products');
-  });
-  var materials = fetchKatanaCached_('KATANA_MATERIALS', KATANA_MASTER_CACHE_TTL_MS, function() {
-    return katanaFetchAllPages('/materials');
-  });
-  var variants = fetchKatanaCached_('KATANA_VARIANTS', KATANA_MASTER_CACHE_TTL_MS, function() {
-    return katanaFetchAllPages('/variants');
-  });
+  var products = katanaFetchAllPages('/products');
+  var materials = katanaFetchAllPages('/materials');
+  var variants = katanaFetchAllPages('/variants');
   var inventory = katanaFetchAllPages('/inventory');
 
   var locationMap = {};
@@ -226,31 +114,26 @@ function fetchAllKatanaData() {
   for (var pi = 0; pi < products.length; pi++) {
     var prod = products[pi];
     var pBt = prod.batch_tracking || prod.batch_tracked || prod.is_batch_tracked || prod.track_batches || false;
-    productMap[prod.id] = { name: prod.name, type: prod.type || prod.product_type || 'product', uom: prod.unit_of_measure || prod.uom || 'ea', purchaseUom: prod.purchase_unit_of_measure || prod.purchase_uom || '', conversionRate: prod.unit_conversion_rate || prod.conversion_rate || null, batchTracking: pBt ? true : false, category: prod.category || prod.category_name || '' };
+    productMap[prod.id] = { name: prod.name, type: prod.type || prod.product_type || 'product', uom: prod.unit_of_measure || prod.uom || 'ea', batchTracking: pBt ? true : false, category: prod.category || prod.category_name || '' };
   }
 
   var materialMap = {};
   for (var mi = 0; mi < materials.length; mi++) {
     var mat = materials[mi];
     var mBt = mat.batch_tracking || mat.batch_tracked || mat.is_batch_tracked || mat.track_batches || false;
-    // Log first material's fields once to identify the correct conversion rate field name
-    if (mi === 0) Logger.log('Material fields: ' + Object.keys(mat).join(', '));
-    var mRate = mat.unit_conversion_rate || mat.conversion_rate || mat.purchase_conversion_rate || mat.uom_conversion_rate || mat.conversion || null;
-    materialMap[mat.id] = { name: mat.name, uom: mat.unit_of_measure || mat.uom || 'ea', purchaseUom: mat.purchase_unit_of_measure || mat.purchase_uom || '', conversionRate: mRate, batchTracking: mBt ? true : false, category: mat.category || mat.category_name || '' };
+    materialMap[mat.id] = { name: mat.name, uom: mat.unit_of_measure || mat.uom || 'ea', batchTracking: mBt ? true : false, category: mat.category || mat.category_name || '' };
   }
 
   var variantMap = {};
   var batchTrackingSkus = {};
   for (var vi = 0; vi < variants.length; vi++) {
     var v = variants[vi];
-    var name = '', type = '', uom = 'ea', purchaseUom = '', conversionRate = null, bt = false, cat = '';
+    var name = '', type = '', uom = 'ea', bt = false, cat = '';
     if (v.product_id) {
       var pInfo = productMap[v.product_id];
       name = pInfo ? pInfo.name : 'Unknown Product';
       type = pInfo ? pInfo.type : 'product';
       uom = pInfo ? pInfo.uom : 'ea';
-      purchaseUom = pInfo ? (pInfo.purchaseUom || '') : '';
-      conversionRate = pInfo ? (pInfo.conversionRate || null) : null;
       bt = pInfo ? pInfo.batchTracking : false;
       cat = pInfo ? pInfo.category : '';
     } else if (v.material_id) {
@@ -258,12 +141,10 @@ function fetchAllKatanaData() {
       name = mInfo ? mInfo.name : 'Unknown Material';
       type = 'material';
       uom = mInfo ? mInfo.uom : 'ea';
-      purchaseUom = mInfo ? (mInfo.purchaseUom || '') : '';
-      conversionRate = mInfo ? (mInfo.conversionRate || null) : null;
       bt = mInfo ? mInfo.batchTracking : false;
       cat = mInfo ? mInfo.category : '';
     }
-    variantMap[v.id] = { sku: v.sku, name: name, type: type, uom: uom, purchaseUom: purchaseUom, conversionRate: conversionRate, category: cat, salesPrice: v.sales_price || 0, productId: v.product_id || '', materialId: v.material_id || '' };
+    variantMap[v.id] = { sku: v.sku, name: name, type: type, uom: uom, category: cat, salesPrice: v.sales_price || 0, productId: v.product_id || '', materialId: v.material_id || '' };
     if (bt && v.sku) batchTrackingSkus[v.sku] = true;
   }
 
@@ -283,7 +164,7 @@ function fetchAllKatanaData() {
     }
     if (!isTracked) continue;
 
-    var vInfo = variantMap[inv.variant_id] || { sku: 'UNKNOWN', name: 'Unknown', type: '?', uom: 'ea', purchaseUom: '', conversionRate: null, category: '', salesPrice: 0 };
+    var vInfo = variantMap[inv.variant_id] || { sku: 'UNKNOWN', name: 'Unknown', type: '?', uom: 'ea', category: '', salesPrice: 0 };
     var rawQty = parseFloat(inv.quantity_in_stock) || 0;
     if (rawQty === undefined || rawQty === null) rawQty = inv.in_stock;
     if (rawQty === undefined || rawQty === null) rawQty = inv.stock;
@@ -292,7 +173,7 @@ function fetchAllKatanaData() {
 
     items.push({
       variantId: inv.variant_id, sku: vInfo.sku, name: vInfo.name,
-      type: capitalizeType(vInfo.type), uom: vInfo.uom, purchaseUom: vInfo.purchaseUom || '', conversionRate: vInfo.conversionRate || UOM_RATE_FALLBACK[vInfo.sku] || null, category: vInfo.category || '',
+      type: capitalizeType(vInfo.type), uom: vInfo.uom, category: vInfo.category || '',
       locationId: inv.location_id, locationName: locName,
       qtyInStock: rawQty, qtyCommitted: inv.quantity_committed || inv.committed || 0,
       qtyExpected: inv.quantity_expected || inv.expected || 0, avgCost: inv.average_cost || inv.cost || 0, salesPrice: vInfo.salesPrice

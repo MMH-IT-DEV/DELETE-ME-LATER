@@ -2,148 +2,11 @@
  * Wasp InventoryCloud API
  */
 
-var WASP_DEFAULT_SITE = 'MMH Mayfair';
-
-function normalizeWaspBaseUrl_(rawUrl) {
-  var url = String(rawUrl || '').trim();
-  if (!url) return '';
-  if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
-  if (url.slice(-1) !== '/') url += '/';
-  if (url.toLowerCase().indexOf('/public-api/') === -1) {
-    if (url.toLowerCase().slice(-11) === '/public-api') url += '/';
-    else url += 'public-api/';
-  }
-  return url;
-}
+var WASP_DEFAULT_SITE = 'MMH Kelowna';
 
 function getWaspBase() {
-  var explicitBase = normalizeWaspBaseUrl_(PropertiesService.getScriptProperties().getProperty('WASP_BASE_URL'));
-  if (explicitBase) return explicitBase;
   var instance = PropertiesService.getScriptProperties().getProperty('WASP_INSTANCE') || 'mymagichealer';
-  return normalizeWaspBaseUrl_('https://' + instance + '.waspinventorycloud.com');
-}
-
-function waspLooksLikeHtml_(body) {
-  return String(body || '').trim().charAt(0) === '<';
-}
-
-function waspShouldRetryCode_(code) {
-  return code === 429 || code === 502 || code === 503 || code === 504;
-}
-
-function waspRetryDelayMs_(attempt, headers) {
-  var resetSec = parseInt((headers && (headers['wasp-overloadprotection-reset'] || headers['Wasp-OverloadProtection-Reset'])) || '', 10);
-  if (!isNaN(resetSec) && resetSec > 0) return resetSec * 1000;
-  var delays = [2000, 5000, 10000, 15000];
-  return delays[Math.min(Math.max(attempt - 1, 0), delays.length - 1)];
-}
-
-function waspBodyHasError_(body) {
-  var text = String(body || '');
-  return /"HasError"\s*:\s*true/i.test(text) || text.indexOf('HasError\\":true') >= 0;
-}
-
-function getWaspInventorySearchCandidates_() {
-  return ['ic/item/advancedinventorysearch', 'ic/item/inventorysearch'];
-}
-
-function getWaspItemSearchCandidates_() {
-  // The older search/itemsearch/detailsearch endpoints have consistently 404'd in this project.
-  // Keep the candidate list tight so Sync and health checks do not waste minutes probing dead paths.
-  return ['ic/item/infosearch', 'ic/item/advancedinfosearch'];
-}
-
-function waspFetchFirstSuccessful_(endpoints, payload) {
-  var errors = [];
-  for (var i = 0; i < endpoints.length; i++) {
-    try {
-      return {
-        endpoint: endpoints[i],
-        result: waspFetch(endpoints[i], payload)
-      };
-    } catch (e) {
-      errors.push(endpoints[i] + ' - ' + e.message);
-    }
-  }
-  throw new Error(errors.join(' | '));
-}
-
-function waspProbeOnce_(endpoint, payload) {
-  var token = PropertiesService.getScriptProperties().getProperty('WASP_API_TOKEN');
-  if (!token) throw new Error('Wasp API token not set.');
-
-  var response = UrlFetchApp.fetch(getWaspBase() + endpoint, {
-    method: 'post',
-    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json', 'Accept': 'application/json' },
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  });
-
-  var code = response.getResponseCode();
-  var body = response.getContentText();
-
-  if (code === 200 && !waspLooksLikeHtml_(body)) {
-    try {
-      return JSON.parse(body);
-    } catch (parseErr) {
-      throw new Error('Wasp returned invalid JSON on ' + endpoint + ': ' + parseErr.message);
-    }
-  }
-
-  if (code === 200 && waspLooksLikeHtml_(body)) {
-    throw new Error('Wasp returned HTML on ' + endpoint + ' - service temporarily unavailable');
-  }
-
-  throw new Error('Wasp ' + code + ' on ' + endpoint + ': ' + body.substring(0, 300));
-}
-
-function waspProbeFirstSuccessful_(endpoints, payload) {
-  var errors = [];
-  for (var i = 0; i < endpoints.length; i++) {
-    try {
-      return {
-        endpoint: endpoints[i],
-        result: waspProbeOnce_(endpoints[i], payload)
-      };
-    } catch (e) {
-      errors.push(endpoints[i] + ' - ' + e.message);
-    }
-  }
-  throw new Error(errors.join(' | '));
-}
-
-function waspExtractHtmlTitle_(body) {
-  var match = String(body || '').match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  if (!match) return '';
-  return String(match[1] || '').replace(/\s+/g, ' ').trim();
-}
-
-function waspCompactSnippet_(body, maxLen) {
-  var text = String(body || '').replace(/\s+/g, ' ').trim();
-  return text.substring(0, maxLen || 240);
-}
-
-function waspInspectEndpoint_(endpoint, payload) {
-  var token = PropertiesService.getScriptProperties().getProperty('WASP_API_TOKEN');
-  if (!token) throw new Error('Wasp API token not set.');
-
-  var response = UrlFetchApp.fetch(getWaspBase() + endpoint, {
-    method: 'post',
-    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json', 'Accept': 'application/json' },
-    payload: JSON.stringify(payload || {}),
-    muteHttpExceptions: true
-  });
-
-  var body = response.getContentText();
-  var isHtml = waspLooksLikeHtml_(body);
-  return {
-    endpoint: endpoint,
-    url: getWaspBase() + endpoint,
-    code: response.getResponseCode(),
-    isHtml: isHtml,
-    title: isHtml ? waspExtractHtmlTitle_(body) : '',
-    snippet: waspCompactSnippet_(body, 260)
-  };
+  return 'https://' + instance + '.waspinventorycloud.com/public-api/';
 }
 
 function waspFetch(endpoint, payload) {
@@ -152,52 +15,23 @@ function waspFetch(endpoint, payload) {
 
   var options = {
     method: 'post',
-    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
     payload: JSON.stringify(payload),
     muteHttpExceptions: true
   };
-  var lastError = '';
 
-  for (var attempt = 1; attempt <= 4; attempt++) {
-    var response;
-    try {
-      response = UrlFetchApp.fetch(getWaspBase() + endpoint, options);
-    } catch (fetchErr) {
-      lastError = 'Wasp fetch exception on ' + endpoint + ': ' + fetchErr.message;
-      if (attempt === 4) throw new Error(lastError);
-      Utilities.sleep(waspRetryDelayMs_(attempt, null));
-      continue;
-    }
-
-    var code = response.getResponseCode();
-    var headers = response.getHeaders();
-    var body = response.getContentText();
-
-    if (code === 200 && !waspLooksLikeHtml_(body)) {
-      try {
-        return JSON.parse(body);
-      } catch (parseErr) {
-        lastError = 'Wasp returned invalid JSON on ' + endpoint + ': ' + parseErr.message;
-        if (attempt === 4) throw new Error(lastError);
-        Utilities.sleep(waspRetryDelayMs_(attempt, headers));
-        continue;
-      }
-    }
-
-    if (code === 200 && waspLooksLikeHtml_(body)) {
-      lastError = 'Wasp returned HTML on ' + endpoint + ' — service temporarily unavailable';
-    } else if (waspShouldRetryCode_(code)) {
-      lastError = 'Wasp ' + code + ' on ' + endpoint + ': ' + body.substring(0, 300);
-    } else {
-      throw new Error('Wasp ' + code + ' on ' + endpoint + ': ' + body.substring(0, 300));
-    }
-
-    if (attempt === 4) throw new Error(lastError);
-    Logger.log('waspFetch retry ' + attempt + ' on ' + endpoint + ': ' + lastError);
-    Utilities.sleep(waspRetryDelayMs_(attempt, headers));
+  var response = UrlFetchApp.fetch(getWaspBase() + endpoint, options);
+  var code = response.getResponseCode();
+  if (code === 429) {
+    var resetSec = parseInt(response.getHeaders()['wasp-overloadprotection-reset'] || '5');
+    Utilities.sleep(resetSec * 1000);
+    response = UrlFetchApp.fetch(getWaspBase() + endpoint, options);
+    code = response.getResponseCode();
   }
-
-  throw new Error(lastError || ('Wasp request failed on ' + endpoint));
+  if (code !== 200) {
+    throw new Error('Wasp ' + code + ' on ' + endpoint + ': ' + response.getContentText().substring(0, 300));
+  }
+  return JSON.parse(response.getContentText());
 }
 
 function waspApiCall(url, payload) {
@@ -205,47 +39,19 @@ function waspApiCall(url, payload) {
   var payloadString = typeof payload === 'string' ? payload : JSON.stringify(payload);
   var options = {
     method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
     payload: payloadString,
     muteHttpExceptions: true
   };
-  var lastCode = 0;
-  var lastBody = '';
-
-  for (var attempt = 1; attempt <= 4; attempt++) {
-    try {
-      var response = UrlFetchApp.fetch(url, options);
-      var code = response.getResponseCode();
-      var headers = response.getHeaders();
-      var body = response.getContentText();
-      lastCode = code;
-      lastBody = body;
-
-      if (code === 200 && !waspLooksLikeHtml_(body) && !waspBodyHasError_(body)) {
-        return { success: true, code: code, response: body };
-      }
-
-      if (code === 200 && waspLooksLikeHtml_(body)) {
-        Logger.log('waspApiCall HTML retry ' + attempt + ' url=' + url);
-      } else if (waspShouldRetryCode_(code)) {
-        Logger.log('waspApiCall transient retry ' + attempt + ': code=' + code + ' url=' + url);
-      } else {
-        Logger.log('waspApiCall FAILED: code=' + code + ' url=' + url + ' body=' + body.substring(0, 500));
-        return { success: false, code: code, response: body };
-      }
-
-      if (attempt === 4) break;
-      Utilities.sleep(waspRetryDelayMs_(attempt, headers));
-    } catch (error) {
-      lastCode = 0;
-      lastBody = error.message;
-      if (attempt === 4) break;
-      Utilities.sleep(waspRetryDelayMs_(attempt, null));
-    }
+  try {
+    var response = UrlFetchApp.fetch(url, options);
+    var code = response.getResponseCode();
+    var body = response.getContentText();
+    var success = code === 200 && body.indexOf('HasError\":true') === -1;
+    return { success: success, code: code, response: body };
+  } catch (error) {
+    return { success: false, code: 0, response: error.message };
   }
-
-  Logger.log('waspApiCall FAILED after retries: code=' + lastCode + ' url=' + url + ' body=' + String(lastBody).substring(0, 500));
-  return { success: false, code: lastCode, response: lastBody };
 }
 
 /**
@@ -290,25 +96,20 @@ function parseWaspDate(value) {
 
 function fetchAllWaspData() {
   var allItems = [];
-  var firstPage = waspFetchFirstSuccessful_(getWaspInventorySearchCandidates_(), { PageSize: 500, PageNumber: 1 });
-  var endpoint = firstPage.endpoint;
-  var result = firstPage.result;
-  var data = result.Data || [];
-  var totalCount = result.TotalRecordsLongCount || 0;
-  var hasMore = result.HasSuccessWithMoreDataRemaining === true;
-  var page = 2;
+  var page = 1;
+  var hasMore = true;
+  var totalCount = 0;
 
-  Logger.log('Using WASP inventory endpoint: ' + endpoint);
-  for (var d = 0; d < data.length; d++) { allItems.push(data[d]); }
-
-  while (hasMore && page <= 50) {
+  while (hasMore) {
     var payload = { PageSize: 500, PageNumber: page };
     if (totalCount > 0) payload.TotalCountFromPriorFetch = totalCount;
-    result = waspFetch(endpoint, payload);
-    data = result.Data || [];
-    for (var d2 = 0; d2 < data.length; d2++) { allItems.push(data[d2]); }
+    var result = waspFetch('ic/item/advancedinventorysearch', payload);
+    var data = result.Data || [];
+    for (var d = 0; d < data.length; d++) { allItems.push(data[d]); }
+    if (page === 1) totalCount = result.TotalRecordsLongCount || 0;
     hasMore = result.HasSuccessWithMoreDataRemaining === true;
     page++;
+    if (page > 50) break;
   }
 
   // Debug: log ALL field names from first raw item so we can verify the correct fields
@@ -458,27 +259,23 @@ function fetchWaspLotInventory() {
 
   // Fallback: use advancedinventorysearch, fetch ALL items, filter client-side for lot data
   // Do NOT use Lot:'*' filter — it is unreliable and often returns 0 results.
-  Logger.log('Dedicated lot endpoints failed - falling back to inventory search client-side lot filter');
+  Logger.log('Dedicated lot endpoints failed — falling back to advancedinventorysearch client-side lot filter');
   try {
     var fallbackItems = [];
-    var inventoryPage = waspFetchFirstSuccessful_(getWaspInventorySearchCandidates_(), { PageSize: 500, PageNumber: 1 });
-    var inventoryEndpoint = inventoryPage.endpoint;
-    var fbResult = inventoryPage.result;
-    var fbData = fbResult.Data || [];
-    var fbTotal = fbResult.TotalRecordsLongCount || 0;
-    var fbHasMore = fbResult.HasSuccessWithMoreDataRemaining === true;
-    var fbPage = 2;
+    var fbPage = 1;
+    var fbHasMore = true;
+    var fbTotal = 0;
 
-    for (var fd = 0; fd < fbData.length; fd++) { fallbackItems.push(fbData[fd]); }
-
-    while (fbHasMore && fbPage <= 50) {
+    while (fbHasMore) {
       var fbPayload = { PageSize: 500, PageNumber: fbPage };
       if (fbTotal > 0) fbPayload.TotalCountFromPriorFetch = fbTotal;
-      fbResult = waspFetch(inventoryEndpoint, fbPayload);
-      fbData = fbResult.Data || [];
-      for (var fd2 = 0; fd2 < fbData.length; fd2++) { fallbackItems.push(fbData[fd2]); }
+      var fbResult = waspFetch('ic/item/advancedinventorysearch', fbPayload);
+      var fbData = fbResult.Data || [];
+      for (var fd = 0; fd < fbData.length; fd++) { fallbackItems.push(fbData[fd]); }
+      if (fbPage === 1) fbTotal = fbResult.TotalRecordsLongCount || 0;
       fbHasMore = fbResult.HasSuccessWithMoreDataRemaining === true;
       fbPage++;
+      if (fbPage > 50) break;
     }
 
     // Filter client-side: keep only records that have a non-empty lot field
@@ -489,14 +286,14 @@ function fetchWaspLotInventory() {
       if (lot) withLots.push(flItem);
     }
 
-    Logger.log('inventory fallback via ' + inventoryEndpoint + ': ' + fallbackItems.length + ' total, ' + withLots.length + ' with lot data');
+    Logger.log('advancedinventorysearch fallback: ' + fallbackItems.length + ' total, ' + withLots.length + ' with lot data');
     return mapLotItems(withLots);
 
   } catch (e) {
-    Logger.log('Inventory-search fallback also failed: ' + e.message);
+    Logger.log('advancedinventorysearch fallback also failed: ' + e.message);
   }
 
-  Logger.log('No working lot endpoint found - returning empty array');
+  Logger.log('No working lot endpoint found — returning empty array');
   return [];
 }
 
@@ -552,7 +349,7 @@ function mapLotItems(rawItems) {
  */
 function fetchWaspItemLotSettings() {
   var map = {};
-  var endpoints = getWaspItemSearchCandidates_();
+  var endpoints = ['ic/item/search', 'ic/item/itemsearch', 'ic/item/detailsearch'];
 
   for (var ei = 0; ei < endpoints.length; ei++) {
     try {
@@ -623,13 +420,12 @@ function enginPreMark_(itemNumber, locationCode, op) {
   var url = PropertiesService.getScriptProperties().getProperty('GAS_WEBHOOK_URL');
   if (!url) return;
   try {
-    var resp = UrlFetchApp.fetch(url, {
+    UrlFetchApp.fetch(url, {
       method: 'POST',
       contentType: 'application/json',
       payload: JSON.stringify({ action: 'engin_mark', sku: itemNumber, location: locationCode, op: op }),
       muteHttpExceptions: true
     });
-    Logger.log('enginPreMark_ ' + op + ' ' + itemNumber + '@' + locationCode + ' → HTTP ' + resp.getResponseCode() + ' ' + resp.getContentText().substring(0, 150));
   } catch (e) {
     Logger.log('enginPreMark_ error: ' + e.message);
   }

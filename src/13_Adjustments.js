@@ -228,9 +228,11 @@ function processAdjustments() {
     logAdjustment('Sync Sheet', effectiveAction === 'ADD' ? 'Add' : 'Remove', '', sku, '', site, location, lot, expiry, adjDiff, '', null, adjAdjStatus);
 
     // Build sub-item for Activity Log
-    var subAction = location;
-    if (lot) subAction += '  lot:' + lot;
-    if (expiry) subAction += '  exp:' + expiry;
+    var subAction = buildActivityActionText_(
+      getActivityDisplayLocation_(location) + '  ' + (effectiveAction === 'ADD' ? 'add' : 'remove'),
+      lot,
+      expiry
+    );
 
     f2SubItems.push({
       sku: sku,
@@ -246,10 +248,9 @@ function processAdjustments() {
 
   // Log to Activity as F2 Adjustments
   var f2Status = failCount === 0 ? 'success' : successCount === 0 ? 'failed' : 'partial';
-  var f2Detail = pendingRows.length + ' adjustment' + (pendingRows.length > 1 ? 's' : '');
-  if (failCount > 0) f2Detail += '  ' + failCount + ' error' + (failCount > 1 ? 's' : '');
+  var f2Detail = joinActivitySegments_(['Sync Sheet', buildActivityCountSummary_(pendingRows.length, 'adjustment', 'adjustments', '')]);
 
-  logActivity('F2', f2Detail, f2Status, '', f2SubItems);
+  logActivity('F2', f2Detail, f2Status, 'Sync Sheet -> WASP', f2SubItems);
 
   Logger.log('Adjustments complete: ' + successCount + ' success, ' + failCount + ' failed');
 }
@@ -415,9 +416,11 @@ function retryMarkedItems() {
     }
 
     // Build sub-item for F2 Activity entry
-    var subAction = location;
-    if (lot) subAction += '  lot:' + lot;
-    if (expiry) subAction += '  exp:' + expiry;
+    var subAction = buildActivityActionText_(
+      getActivityDisplayLocation_(location) + '  ' + (action === 'ADD' ? 'add' : 'remove'),
+      lot,
+      expiry
+    );
 
     f2SubItems.push({
       sku: parsed.sku,
@@ -437,9 +440,8 @@ function retryMarkedItems() {
   // Log retry batch to Activity as F2
   if (f2SubItems.length > 0) {
     var f2Status = failCount === 0 ? 'success' : successCount === 0 ? 'failed' : 'partial';
-    var f2Detail = checkedRows.length + ' retry' + (checkedRows.length > 1 ? ' items' : '');
-    if (failCount > 0) f2Detail += '  ' + failCount + ' error' + (failCount > 1 ? 's' : '');
-    logActivity('F2', f2Detail, f2Status, '', f2SubItems);
+    var f2Detail = joinActivitySegments_(['Activity Retry', buildActivityCountSummary_(checkedRows.length, 'adjustment', 'adjustments', '')]);
+    logActivity('F2', f2Detail, f2Status, 'Activity -> WASP', f2SubItems);
   }
 
   Logger.log('Retry complete: ' + successCount + ' success, ' + failCount + ' failed');
@@ -819,6 +821,8 @@ function onOpenRetryMenu() {
     .addSeparator()
     .addItem('Setup Retry Checkboxes', 'setupRetryCheckboxes')
     .addItem('Process Adjustments', 'processAdjustments')
+    .addItem('Run Activity Conformance Suite', 'runActivityConformanceSuite')
+    .addItem('Run Real Activity Samples', 'runRealActivitySamples')
     .addItem('Debug MO Batch Data', 'debugMOBatchDataPrompt')
     .addItem('Repair MO From Debug', 'repairMOFromDebugPrompt')
     .addSeparator()

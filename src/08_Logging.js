@@ -222,6 +222,166 @@ function getActivitySheet() {
   return activitySheet;
 }
 
+function getActivityStatusText_(flow, status) {
+  if (status === 'failed') return 'Failed';
+  if (status === 'partial') return 'Partial';
+  if (status === 'skipped') return 'Skipped';
+  if (status === 'reverted') return 'Reverted';
+  return FLOW_STATUS_TEXT[flow] || 'Complete';
+}
+
+function joinActivitySegments_(segments) {
+  var parts = [];
+  for (var i = 0; i < (segments || []).length; i++) {
+    var value = String(segments[i] || '').trim();
+    if (value) parts.push(value);
+  }
+  return parts.join('  ');
+}
+
+function getActivityDisplayLocation_(location) {
+  var text = String(location || '').trim();
+  if (text === 'AMAZON-FBA-USA') return 'AMAZON-FBA';
+  return text;
+}
+
+function buildActivityCountSummary_(count, singular, plural, verb) {
+  var qty = Number(count || 0);
+  var noun = qty === 1 ? singular : plural;
+  return joinActivitySegments_([qty + ' ' + noun, verb]);
+}
+
+function buildActivityBatchMeta_(lot, expiry) {
+  var parts = [];
+  if (lot) parts.push('lot:' + lot);
+  if (expiry) parts.push('exp:' + normalizeBusinessDate_(expiry));
+  return joinActivitySegments_(parts);
+}
+
+function buildActivityActionText_(action, lot, expiry) {
+  return joinActivitySegments_([action, buildActivityBatchMeta_(lot, expiry)]);
+}
+
+function extractCanonicalActivityRef_(rawRef, fallbackPrefix, fallbackId) {
+  var text = String(rawRef || '').trim();
+  var match = text.match(/(#\d+|PO-\d+|ST-\d+|MO-\d+|SA-\d+|SO-[A-Za-z0-9-]+)/);
+  if (match) return match[1];
+  if (fallbackPrefix && fallbackId !== undefined && fallbackId !== null && fallbackId !== '') {
+    return fallbackPrefix + fallbackId;
+  }
+  return text;
+}
+
+function buildActivityHeaderLine_(details, context) {
+  return joinActivitySegments_([details, context]);
+}
+
+function deriveActivityHeaderError_(subItems, headerError) {
+  return headerError || '';
+}
+
+function appendActivityBlockToSheet_(activitySheet, flow, details, status, context, subItems, linkInfo, preExecId, headerError) {
+  var execId = preExecId || getNextExecId(activitySheet);
+  var now = new Date();
+  var timeStr = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
+
+  var flowLabel = FLOW_LABELS[flow] || flow;
+  var statusText = getActivityStatusText_(flow, status);
+  var headerLine = buildActivityHeaderLine_(details, context);
+  var headerErrorText = deriveActivityHeaderError_(subItems, headerError);
+
+  var headerRow = activitySheet.getLastRow() + 1;
+  activitySheet.getRange(headerRow, 1, 1, 6).setValues([
+    [execId, timeStr, flowLabel, headerLine, statusText, headerErrorText || '']
+  ]);
+
+  var actHdrBg = FLOW_COLORS[flow] || null;
+  if (actHdrBg) activitySheet.getRange(headerRow, 1, 1, 6).setBackground(actHdrBg);
+
+  if (linkInfo && linkInfo.text && linkInfo.url) {
+    var cell = activitySheet.getRange(headerRow, 4);
+    var startIdx = headerLine.indexOf(linkInfo.text);
+    if (startIdx >= 0) {
+      var richText = SpreadsheetApp.newRichTextValue()
+        .setText(headerLine)
+        .setLinkUrl(startIdx, startIdx + linkInfo.text.length, linkInfo.url)
+        .build();
+      cell.setRichTextValue(richText);
+    }
+  }
+
+  if (subItems && subItems.length > 0) {
+    for (var i = 0; i < subItems.length; i++) {
+      var item = subItems[i];
+      var isLast = (i === subItems.length - 1);
+
+      var subLine;
+      if (item.nested) {
+        var nextNested = (i + 1 < subItems.length) && subItems[i + 1].nested;
+        var nestedLine = nextNested ? '├─' : '└─';
+        subLine = '    │   ' + nestedLine + ' x' + item.qty + (item.uom ? ' ' + item.uom : '');
+        if (item.action) subLine += '  ' + item.action;
+      } else if (item.isParent) {
+        var parentTreeLine = isLast ? '└─' : '├─';
+        subLine = '    ' + parentTreeLine + ' ' + item.sku;
+        if (item.qty) subLine += ' x' + item.qty + (item.uom ? ' ' + item.uom : '');
+        if (item.action) subLine += '  ' + item.action;
+        if (item.batchCount) subLine += ' (' + item.batchCount + ' batches)';
+      } else {
+        var treeLine = isLast ? '└─' : '├─';
+        subLine = '    ' + treeLine + ' ' + item.sku;
+        if (item.qty) subLine += ' x' + item.qty + (item.uom ? ' ' + item.uom : '');
+        if (item.action) subLine += '  ' + item.action;
+      }
+
+      var subStatus = item.status || (item.success !== false ? '' : 'Failed');
+      var subError = item.error ? cleanErrorMessage(item.error) : '';
+      if (String(subStatus || '').toLowerCase() === 'skipped') subError = '';
+
+      var subRow = activitySheet.getLastRow() + 1;
+      activitySheet.getRange(subRow, 1, 1, 6).setValues([['', '', '', subLine, subStatus, subError]]);
+
+      var actSubStat = String(subStatus || '').toLowerCase();
+      if (actSubStat === 'skipped') {
+        activitySheet.getRange(subRow, 4).setBackground('#fff8e1');
+      } else if (subError) {
+        activitySheet.getRange(subRow, 4).setBackground('#ffebee');
+      } else {
+        activitySheet.getRange(subRow, 4).setBackground('#e8f5e9');
+      }
+
+      if (actSubStat === 'failed') {
+        activitySheet.getRange(subRow, 5).setBackground('#f8d7da');
+      } else if (actSubStat === 'skipped') {
+        activitySheet.getRange(subRow, 5).setBackground('#fff8e1');
+      } else if (subStatus) {
+        activitySheet.getRange(subRow, 5).setBackground('#d4edda');
+      }
+
+      if (subError) {
+        activitySheet.getRange(subRow, 6).setBackground('#fff0f0');
+      }
+
+      if (item.qtyColor && item.qty) {
+        var qtyStr = 'x' + item.qty;
+        var qtyStart = subLine.indexOf(qtyStr);
+        if (qtyStart >= 0) {
+          var qtyEnd = qtyStart + qtyStr.length;
+          var qtyHex = item.qtyColor === 'green' ? '#008000' : item.qtyColor === 'grey' ? '#999999' : '#cc0000';
+          var qtyStyle = SpreadsheetApp.newTextStyle().setForegroundColor(qtyHex).build();
+          var qtyRtv = SpreadsheetApp.newRichTextValue()
+            .setText(subLine)
+            .setTextStyle(qtyStart, qtyEnd, qtyStyle)
+            .build();
+          activitySheet.getRange(subRow, 4).setRichTextValue(qtyRtv);
+        }
+      }
+    }
+  }
+
+  return execId;
+}
+
 /**
  * Get next execution ID (WK-XXX format, auto-incrementing)
  * Uses ScriptProperties as atomic counter with document lock to prevent duplicates.
@@ -287,136 +447,7 @@ function getNextExecId(activitySheet) {
 function logActivity(flow, details, status, context, subItems, linkInfo, preExecId, headerError) {
   try {
     var activitySheet = getActivitySheet();
-    var execId = preExecId || getNextExecId(activitySheet);
-    var now = new Date();
-    var timeStr = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
-
-    var flowLabel = FLOW_LABELS[flow] || flow;
-    var statusText = status === 'failed' ? 'Failed' : status === 'partial' ? 'Partial' : status === 'skipped' ? 'Skipped' : status === 'reverted' ? 'Reverted' : (FLOW_STATUS_TEXT[flow] || 'Complete');
-
-    // Build header details (col D): clean text + context
-    var headerLine = details || '';
-    if (context) headerLine += '  ' + context;
-
-    // Auto-build header error summary from sub-items if not provided
-    if (!headerError && subItems && subItems.length > 0) {
-      var skipN = 0, failN = 0, warnN = 0;
-      for (var e = 0; e < subItems.length; e++) {
-        var si = subItems[e];
-        if (si.status === 'Skipped') skipN++;
-        else if (!si.success) failN++;
-        if (si.success && si.error) warnN++;
-      }
-      var errParts = [];
-      if (skipN > 0) errParts.push(skipN + ' skipped');
-      if (failN > 0) errParts.push(failN + ' failed');
-      if (warnN > 0) errParts.push(warnN + ' warning' + (warnN > 1 ? 's' : ''));
-      headerError = errParts.join(', ');
-    }
-
-    // Write header row — 6 columns
-    var headerRow = activitySheet.getLastRow() + 1;
-    activitySheet.getRange(headerRow, 1, 1, 6).setValues([
-      [execId, timeStr, flowLabel, headerLine, statusText, headerError || '']
-    ]);
-
-    // Color header row by flow
-    var actFlowColors = { 'F1': '#cce5ff', 'F2': '#b2dfdb', 'F3': '#fce4d6', 'F4': '#f0e6f6', 'F5': '#d1ecf1', 'F6': '#ffe0b2' };
-    var actHdrBg = actFlowColors[flow] || null;
-    if (actHdrBg) activitySheet.getRange(headerRow, 1, 1, 6).setBackground(actHdrBg);
-
-    // Apply clickable link on reference number in Details column
-    if (linkInfo && linkInfo.text && linkInfo.url) {
-      var cell = activitySheet.getRange(headerRow, 4);
-      var startIdx = headerLine.indexOf(linkInfo.text);
-      if (startIdx >= 0) {
-        var richText = SpreadsheetApp.newRichTextValue()
-          .setText(headerLine)
-          .setLinkUrl(startIdx, startIdx + linkInfo.text.length, linkInfo.url)
-          .build();
-        cell.setRichTextValue(richText);
-      }
-    }
-
-    // Write sub-item rows with tree lines — 6 columns
-    // Supports nested batch sub-rows: item.nested=true renders deeper indent
-    // item.isParent=true renders as parent with "(N batches)" suffix
-    if (subItems && subItems.length > 0) {
-      for (var i = 0; i < subItems.length; i++) {
-        var item = subItems[i];
-        var isLast = (i === subItems.length - 1);
-
-        var subLine;
-        if (item.nested) {
-          // Nested batch sub-row: "│   ├─ x{qty} {uom}  lot:{lot}  exp:{exp}"
-          var nextNested = (i + 1 < subItems.length) && subItems[i + 1].nested;
-          var nestedLine = nextNested ? '├─' : '└─';
-          subLine = '    │   ' + nestedLine + ' x' + item.qty + (item.uom ? ' ' + item.uom : '');
-          if (item.action) subLine += '  ' + item.action;
-        } else if (item.isParent) {
-          // Parent multi-batch row: "├─ SKU x{qty} {uom}  LOCATION (N batches)"
-          var treeLine = isLast ? '└─' : '├─';
-          subLine = '    ' + treeLine + ' ' + item.sku;
-          if (item.qty) subLine += ' x' + item.qty + (item.uom ? ' ' + item.uom : '');
-          if (item.action) subLine += '  ' + item.action;
-          if (item.batchCount) subLine += ' (' + item.batchCount + ' batches)';
-        } else {
-          // Standard sub-item: "├─ SKU x{qty} {uom}  action"
-          var treeLine = isLast ? '└─' : '├─';
-          subLine = '    ' + treeLine + ' ' + item.sku;
-          if (item.qty) subLine += ' x' + item.qty + (item.uom ? ' ' + item.uom : '');
-          if (item.action) subLine += '  ' + item.action;
-        }
-
-        var subStatus = item.status || (item.success !== false ? '' : 'Failed');
-        var subError = item.error ? cleanErrorMessage(item.error) : '';
-
-        var subRow = activitySheet.getLastRow() + 1;
-        activitySheet.getRange(subRow, 1, 1, 6).setValues([['', '', '', subLine, subStatus, subError]]);
-
-        // Color sub-item detail cell (col D) by outcome
-        var actSubStat = subStatus.toLowerCase();
-        if (actSubStat === 'skipped') {
-          activitySheet.getRange(subRow, 4).setBackground('#fff8e1');
-        } else if (subError) {
-          activitySheet.getRange(subRow, 4).setBackground('#ffebee');
-        } else {
-          activitySheet.getRange(subRow, 4).setBackground('#e8f5e9');
-        }
-
-        // Color sub-item status cell (col E)
-        if (actSubStat === 'failed') {
-          activitySheet.getRange(subRow, 5).setBackground('#f8d7da');
-        } else if (actSubStat === 'skipped') {
-          activitySheet.getRange(subRow, 5).setBackground('#fff8e1');
-        } else if (subStatus) {
-          activitySheet.getRange(subRow, 5).setBackground('#d4edda');
-        }
-
-        // Color error cell (col F)
-        if (subError) {
-          activitySheet.getRange(subRow, 6).setBackground('#fff0f0');
-        }
-
-        // Color qty text green (additions) or red (removals) via RichTextValue
-        if (item.qtyColor && item.qty) {
-          var qtyStr = 'x' + item.qty;
-          var qtyStart = subLine.indexOf(qtyStr);
-          if (qtyStart >= 0) {
-            var qtyEnd = qtyStart + qtyStr.length;
-            var qtyHex = item.qtyColor === 'green' ? '#008000' : item.qtyColor === 'grey' ? '#999999' : '#cc0000';
-            var qtyStyle = SpreadsheetApp.newTextStyle().setForegroundColor(qtyHex).build();
-            var qtyRtv = SpreadsheetApp.newRichTextValue()
-              .setText(subLine)
-              .setTextStyle(qtyStart, qtyEnd, qtyStyle)
-              .build();
-            activitySheet.getRange(subRow, 4).setRichTextValue(qtyRtv);
-          }
-        }
-      }
-    }
-
-    return execId;
+    return appendActivityBlockToSheet_(activitySheet, flow, details, status, context, subItems, linkInfo, preExecId, headerError);
 
   } catch (e) {
     Logger.log('logActivity error: ' + e.message);
