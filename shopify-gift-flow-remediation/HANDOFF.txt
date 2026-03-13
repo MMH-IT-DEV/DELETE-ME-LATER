@@ -1,0 +1,201 @@
+SHOPIFY GIFT FLOW HANDOFF
+Project: Shopify Flow - Fraud Hold & Gift Automation Fix
+Reference ticket: #43
+Prepared on: 2026-03-13
+
+1. PROJECT GOAL
+
+The business problem is that gift workflows were running on Order created, while fraud review and hold logic ran slightly later. That created a race where a free gift could be added and fulfilled even though the rest of the order was later held for fraud/review.
+
+The quick-fix requirement from the project description was:
+- make gift logic run after fraud analysis
+- only proceed if the order is not high-risk
+- only proceed if the order is not on hold / not under review
+
+2. HIGH-LEVEL DESIGN THAT WAS IMPLEMENTED
+
+The original gift flows were converted into eligibility-only flows:
+- they still run on Order created
+- they no longer add the gift directly
+- they only add eligibility tags
+
+A new post-fraud flow was added:
+- Add Gift After Risk Review
+- trigger: Order risk analyzed
+- this is intended to be the only flow that actually adds the gift
+
+Additional block logic was added:
+- review / hold / fraud flows now add GIFT_BLOCKED
+- the post-fraud gift flow checks that GIFT_BLOCKED is absent
+
+This was done because Shopify Flow does not make a clean "wait until the order is safe" pattern easy when multiple workflows are involved.
+
+3. FLOWS INVOLVED
+
+Gift eligibility flows:
+- Add gift when 2+ 4oz products ordered
+- Shop App - Gift Trigger - 4oz Jars
+- Shop App - Gift Trigger - Bundles
+
+Post-fraud consumer flow:
+- Add Gift After Risk Review
+
+Blocking / review / hold flows updated to add GIFT_BLOCKED:
+- Prevent Try Before You Buy Abuse
+- High Quantity Order Review
+- Repeat High-Volume Purchase Detection
+- Hold orders if customer placed more than 1 order in last 1 hour
+- Shopify High-Risk Order Hold - Slack Alert
+
+Unrelated flow intentionally left alone:
+- Add tag Order Protected
+
+4. INTENDED FINAL LOGIC
+
+Eligibility flows:
+- run on Order created
+- identify qualifying orders
+- add either GIFT_ELIGIBLE_4OZ or GIFT_ELIGIBLE_BUNDLE
+- do not add line items
+
+Post-fraud gift flow:
+- run on Order risk analyzed
+- if order risk level is not HIGH
+- if order has GIFT_ELIGIBLE_4OZ or GIFT_ELIGIBLE_BUNDLE
+- if order does not have GIFT_ADDED
+- if order does not have GIFT_BLOCKED
+- add Universal Flare Care Gift - 1oz
+- add GIFT_ADDED
+
+Gift variant used:
+- Universal Flare Care Gift - 1oz
+- gid://shopify/ProductVariant/46940001599706
+
+5. WHAT WAS VERIFIED IN SHOPIFY FLOW
+
+Verified by browser-agent inspection:
+- Add gift when 2+ 4oz products ordered is eligibility-only
+- Shop App - Gift Trigger - 4oz Jars is eligibility-only
+- Shop App - Gift Trigger - Bundles is eligibility-only
+- Add Gift After Risk Review exists and was activated
+- GIFT_BLOCKED was added to the five hold/review/fraud flows listed above
+- only one active flow path is supposed to add the gift
+
+Important implementation detail for non-Shop-App 4oz flow:
+- the duoVariants counting logic in Run code should use item.quantity * 2
+- if it still uses fourOzCount += 2, that undercounts multi-quantity duo orders
+
+6. CRITICAL LIVE FINDING
+
+After the structural changes, a live order audit was run against recent Shopify orders.
+
+Result:
+- blocked orders were correctly NOT receiving the gift
+- eligible low-risk orders were also NOT receiving the gift
+
+Example eligible orders checked that did NOT receive the gift:
+- #94545
+- #94540
+- #94534
+- #94531
+- #94526
+
+Observed pattern:
+- orders had GIFT_ELIGIBLE_4OZ
+- orders were low risk
+- orders were not visibly blocked
+- orders did NOT have the gift item
+- orders did NOT have GIFT_ADDED
+
+This means the "happy path" is currently failing.
+
+Do NOT assume the ticket is fully solved just because the flow architecture was changed.
+
+7. MOST LIKELY ROOT CAUSE
+
+The strongest hypothesis is a timing/race issue between:
+- Order created eligibility tagging
+- Order risk analyzed gift insertion
+
+Likely failure mode:
+- Add Gift After Risk Review fires on Order risk analyzed
+- at that exact moment, GIFT_ELIGIBLE_4OZ or GIFT_ELIGIBLE_BUNDLE is not on the order yet
+- the flow exits because the eligibility tag check fails
+- later, the eligibility flow adds the tag
+- but the post-fraud flow does not rerun, so the gift is never added
+
+Secondary hypothesis:
+- Order risk analyzed may not be firing consistently for low-risk orders the way expected
+
+8. WHAT A NEW AGENT MUST DO NEXT
+
+Priority 1: DEBUG THE LIVE FAILURE
+
+Do not keep changing flow structure blindly.
+The next agent should debug run history for Add Gift After Risk Review on real orders.
+
+Start with these orders:
+- #94545
+- #94540
+- #94534
+- #94531
+- #94526
+
+For each order, determine:
+1. Did Add Gift After Risk Review run at all?
+2. If yes, which exact condition failed?
+3. At the moment the flow ran, was GIFT_ELIGIBLE_4OZ or GIFT_ELIGIBLE_BUNDLE already present?
+4. At the moment the flow ran, was GIFT_BLOCKED present?
+5. Did the Add order line item action error?
+6. Did Order risk analyzed trigger for the order at all?
+
+Also compare each order timeline for:
+- when the eligibility tag was added
+- when risk status was assigned
+- whether the post-fraud flow ran before or after the eligibility tag appeared
+
+Priority 2: FIX BASED ON EVIDENCE
+
+If the issue is "risk flow runs before eligibility tag exists", the likely fixes are:
+- move the post-risk gift flow to a trigger that can see the final state reliably
+- or add a second consumer path that runs when eligibility is tagged and checks that risk is already safe
+- or refactor so the post-risk flow determines eligibility directly instead of relying on a previously-added tag
+
+If the issue is "Order risk analyzed does not run for safe orders", then the current trigger choice is wrong for the happy path and must be replaced.
+
+Priority 3: RE-TEST USING REAL ORDERS
+
+Minimum live validation cases after the next fix:
+- eligible low-risk order -> gift added once
+- eligible high-risk order -> no gift
+- eligible blocked/reviewed/held order -> no gift
+- Shop App order with 1 qualifying 4oz item plus 1 unrelated item -> no gift
+- no order gets the gift more than once
+
+9. WHAT NOT TO DO
+
+- Do not assume the project is done based on structure alone
+- Do not delete blocking flows
+- Do not reintroduce gift insertion into the Order created flows
+- Do not activate duplicate post-fraud gift flows
+- Do not trust browser-agent summaries without checking live run history
+
+10. FILES IN THIS WORKSPACE
+
+Local remediation notes are in:
+- C:\Users\Admin\Documents\claude-projects\wasp-katana\shopify-gift-flow-remediation\README.md
+- C:\Users\Admin\Documents\claude-projects\wasp-katana\shopify-gift-flow-remediation\BROWSER_AGENT_EXECUTION_PROMPT.md
+- C:\Users\Admin\Documents\claude-projects\wasp-katana\shopify-gift-flow-remediation\HANDOFF.txt
+
+11. CURRENT STATUS SUMMARY
+
+What is working:
+- blocked/review paths appear to suppress gifting correctly
+- duplicate direct gift-add flows were removed
+
+What is NOT working:
+- eligible low-risk orders are not receiving the gift
+
+Bottom line:
+- the safety side of the quick fix appears partially successful
+- the revenue/promo side is broken until the live happy-path failure is resolved
