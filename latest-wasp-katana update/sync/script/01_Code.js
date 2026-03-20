@@ -6,7 +6,7 @@
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Inventory Sync')
-    .addItem('Sync Now', 'runFullSync')
+    .addItem('Sync Now', 'runFullSyncForce')
     .addItem('Push to WASP', 'pushToWasp')
     .addItem('Auto-Adjust WASP', 'autoAdjustWasp')
     .addSeparator()
@@ -36,7 +36,7 @@ function onOpen() {
  * Marks rows as Pending when editable columns are changed.
  * IMPORTANT: Simple triggers cannot call services requiring auth (like UrlFetchApp)
  *
- * Wasp tab (18 cols): editable cols D(4), E(5), G(7), H(8), L(12)=W.Qty — C(3)=Type, J(10)=K.Qty, F(6)=LotTracked are read-only
+ * Wasp tab (19 cols): editable cols E(5)=Site, F(6)=Location, H(8)=Lot, I(9)=DateCode, M(13)=W.Qty — C(3)=Cost, D(4)=Type, K(11)=K.Qty, G(7)=LotTracked are read-only
  * Batch tab (20 cols): editable cols G(7)=W.Site, H(8)=W.Location, I(9)=W.Qty, K(11)=W.Lot, L(12)=W.DateCode
  */
 function onEdit(e) {
@@ -96,15 +96,18 @@ function onEdit(e) {
   var config;
   if (sheetName === 'Wasp') {
     config = {
-      numCols: 18,
-      statusCol: 16,
+      numCols: 19,
+      statusCol: 17,
       // origColMap: maps 1-based edited col → 1-based orig col (null = no orig tracking)
-      // Editable: D(4)=Site→M(13), E(5)=Location→N(14), G(7)=Lot→Q(17), H(8)=DateCode→R(18), L(12)=W.Qty→K(11)
-      origColMap: { 2: null, 4: 13, 5: 14, 7: 17, 8: 18, 12: 11 },
-      qtyCol: 12,
-      origQtyCol: 11,
-      origSiteCol: 13,
-      trackedPairs: [ [12, 11], [4, 13], [5, 14], [7, 17], [8, 18] ]  // [editCol, origCol]
+      // Layout (19 cols): A(1)=SKU, B(2)=Name, C(3)=Cost, D(4)=Type, E(5)=Site, F(6)=Location,
+      //   G(7)=LotTracked, H(8)=Lot, I(9)=DateCode, J(10)=UOM, K(11)=K.Qty, L(12)=OrigWASPQty,
+      //   M(13)=W.Qty, N(14)=OrigSite, O(15)=OrigLocation, P(16)=Match, Q(17)=Status, R(18)=OrigLot, S(19)=OrigDateCode
+      // Editable: E(5)=Site→N(14), F(6)=Location→O(15), H(8)=Lot→R(18), I(9)=DateCode→S(19), M(13)=W.Qty→L(12)
+      origColMap: { 2: null, 5: 14, 6: 15, 8: 18, 9: 19, 13: 12 },
+      qtyCol: 13,
+      origQtyCol: 12,
+      origSiteCol: 14,
+      trackedPairs: [ [13, 12], [5, 14], [6, 15], [8, 18], [9, 19] ]  // [editCol, origCol]
     };
   } else {
     // Batch: W.Site(7)→Orig(16), W.Location(8)→Orig(17), W.Qty(9)→Orig(15), W.Lot(11)→Orig(19), W.DateCode(12)→Orig(20)

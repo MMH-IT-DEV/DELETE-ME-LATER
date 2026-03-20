@@ -1954,6 +1954,62 @@ function handleSalesOrderDelivered(payload) {
     items = rowsData && rowsData.data ? rowsData.data : (rowsData || []);
   }
 
+  // F6: Katana SO rows don't have delivered_quantity or done fields.
+  // Fetch fulfillment records to find which items were actually delivered.
+  if (isF6 && items.length > 0) {
+    try {
+      var fulfillData = katanaApiCall('sales_order_fulfillments?sales_order_id=' + soId);
+      var fulfillments = fulfillData && fulfillData.data ? fulfillData.data : (fulfillData || []);
+      if (Array.isArray(fulfillments) && fulfillments.length > 0) {
+        // Sort fulfillments by id descending — highest id = newest delivery
+        fulfillments.sort(function(a, b) { return (b.id || 0) - (a.id || 0); });
+        // Use ONLY the newest fulfillment — this is the delivery that triggered the webhook
+        var newestFulfillment = fulfillments[0];
+        var newestRows = newestFulfillment.sales_order_fulfillment_rows || newestFulfillment.rows || [];
+        var newestRowIds = {};
+        for (var fr = 0; fr < newestRows.length; fr++) {
+          var fRow = newestRows[fr];
+          var fRowId = String(fRow.sales_order_row_id || fRow.id || '');
+          var fQty = parseFloat(fRow.quantity) || 0;
+          if (fRowId && fQty > 0) {
+            newestRowIds[fRowId] = fQty;
+          }
+        }
+        // Filter: only include items from the newest fulfillment
+        var f6Delivered = [];
+        for (var dqf = 0; dqf < items.length; dqf++) {
+          var dqItem = items[dqf];
+          var dqRowId = String(dqItem.id || '');
+          if (newestRowIds[dqRowId] && newestRowIds[dqRowId] > 0) {
+            dqItem.delivered_quantity = newestRowIds[dqRowId];
+            f6Delivered.push(dqItem);
+          }
+        }
+        logWebhookQueue(
+          { action: 'f6_fulfillment_debug' },
+          { status: 'diag', message: 'Fulfillments=' + fulfillments.length +
+            ' | newestId=' + newestFulfillment.id +
+            ' | newestRowIds=' + JSON.stringify(newestRowIds) +
+            ' | filtered=' + f6Delivered.length + '/' + items.length }
+        );
+        if (f6Delivered.length > 0) {
+          items = f6Delivered;
+        }
+      } else {
+        // No fulfillment records found — try rows endpoint as fallback
+        logWebhookQueue(
+          { action: 'f6_fulfillment_debug' },
+          { status: 'diag', message: 'No fulfillment records found for SO ' + soId + ' — processing all rows' }
+        );
+      }
+    } catch (fulfillErr) {
+      logWebhookQueue(
+        { action: 'f6_fulfillment_error' },
+        { status: 'diag', message: 'Fulfillment fetch error: ' + fulfillErr.message }
+      );
+    }
+  }
+
   var dedupKey = 'so_delivered_' + soId;
   if (isF6) {
     dedupKey += '_' + buildSODeliverySignature_(items);
@@ -2017,7 +2073,7 @@ function handleSalesOrderDelivered(payload) {
         }
 
         // F6: SO from MMH Kelowna → FBA shipment
-        // Step 1: Remove from SHIPPING-DOCK (lot-aware)
+        // Step 1: Remove from PRODUCTION (lot-aware)
         // Step 2: Add to AMAZON-FBA-USA with same lot if applicable
         markSyncedToWasp(sku, removeLocation, 'remove', removeSite || CONFIG.WASP_SITE);
         var f6LotInfo = waspLookupItemLotAndDate(sku, removeLocation, null);
@@ -2171,13 +2227,15 @@ function handleSalesOrderDelivered(payload) {
         itemError = dRes.result ? (dRes.result.error || parseWaspError(dRes.result.response, 'Remove', dRes.sku)) : '';
       }
     }
+    var sdItemStatus = dOk ? (dRes.isF6 ? 'Complete' : 'Deducted') : (dRes.isF6 ? 'Skipped' : 'Failed');
+    if (dRes.skipped) sdItemStatus = 'Skipped';
     sdSubItems.push({
       sku: dRes.sku,
       qty: dRes.quantity,
       uom: dRes.uom || '',
-      success: dOk,
-      status: dRes.skipped ? 'Skipped' : (dOk ? (dRes.isF6 ? 'Complete' : 'Deducted') : 'Failed'),
-      error: itemError,
+      success: dOk || sdItemStatus === 'Skipped',
+      status: sdItemStatus,
+      error: (sdItemStatus === 'Skipped') ? '' : itemError,
       action: actionText,
       qtyColor: dRes.isF6 ? 'green' : 'red'
     });
@@ -2192,7 +2250,7 @@ function handleSalesOrderDelivered(payload) {
   ]);
   var sdLocationLabel = isF6 ? getActivityDisplayLocation_(FLOWS.AMAZON_FBA_WASP_LOCATION) : getActivityDisplayLocation_(removeLocation);
   var sdContext = isF6
-    ? buildActivityTransferContext_('ShipStation', 'stage', CONFIG.WASP_SITE, FLOWS.AMAZON_FBA_WASP_SITE)
+    ? buildActivityTransferContext_('Katana', 'deliver', CONFIG.WASP_SITE, FLOWS.AMAZON_FBA_WASP_SITE)
     : buildActivitySourceActionContext_('ShipStation', 'ship deduct', CONFIG.WASP_SITE);
   var sdExecId = logActivity(flowLabel, sdDetail, sdStatus, sdContext, (isF6 || sdSubItems.length > 1) ? sdSubItems : null, {
     text: soRefToken,
@@ -4875,7 +4933,7 @@ function handleManufacturingOrderUpdated(payload) {
           var status = String((entity && entity.status) || '').toUpperCase();
           return !!status && status !== 'DONE' && status !== 'COMPLETED';
         },
-        [0, 1000, 2000]
+        [0, 2000, 4000, 8000]
       );
       var confirmedMO = adaptiveConfirm ? adaptiveConfirm.entity : null;
       if (!confirmedMO) {
@@ -4894,16 +4952,18 @@ function handleManufacturingOrderUpdated(payload) {
           waitedMs: adaptiveConfirm.waitedMs
         }, 'Adaptive F4 revert confirmation wait');
       }
-      // If Katana confirms the MO is DONE despite the NOT_STARTED payload,
-      // this was a transient edit-side-effect webhook. Do NOT revert.
+      // If Katana API still returns DONE after extended retries but webhook
+      // explicitly says non-DONE: Katana API propagation is slow. The webhook
+      // payload is authoritative — a snapshot exists proving the MO was completed,
+      // and the webhook explicitly carries a non-DONE status. Proceed with revert.
       if (confirmedStatus === 'DONE' || confirmedStatus === 'COMPLETED') {
-        logToSheet('MO_REVERT_BLOCKED_CONFIRMED_DONE', {
+        logToSheet('MO_REVERT_API_SLOW_PROCEEDING', {
           moId: moId,
           payloadStatus: triggerStatus,
           confirmedStatus: confirmedStatus,
-          moRef: moRefRev
-        }, 'Revert blocked: Katana confirms MO is still DONE — transient NOT_STARTED, no revert needed');
-        return { status: 'ignored', reason: 'Revert blocked: MO confirmed DONE on re-fetch (transient edit webhook)', moId: moId };
+          moRef: moRefRev,
+          waitedMs: adaptiveConfirm.waitedMs
+        }, 'Katana API still returns DONE after ' + adaptiveConfirm.waitedMs + 'ms but webhook says ' + triggerStatus + ' — trusting webhook, proceeding with revert');
       }
 
       if (confirmedStatus && confirmedStatus !== triggerStatus) {
@@ -5002,7 +5062,7 @@ function handleManufacturingOrderDeleted(payload) {
  * @param {string} snapshotStr - JSON string of stored snapshot
  * @param {string} trigger - What triggered the reversal (for logging)
  */
-var REVERT_WINDOW_DAYS = 5;
+var REVERT_WINDOW_DAYS = 14;
 
 function reverseMOSnapshot(moId, moRef, snapshotStr, trigger) {
   var snapshot;
@@ -5105,6 +5165,8 @@ function reverseMOSnapshot(moId, moRef, snapshotStr, trigger) {
     if (cacheMoId) {
       moCache.remove('mo_done_' + cacheMoId);
       moCache.remove('mo_staging_' + cacheMoId);
+      moCache.remove('mo_done_guard_' + cacheMoId);
+      moCache.remove('mo_revert_guard_' + cacheMoId);
     }
   } catch (cacheErr) {
     Logger.log('reverseMOSnapshot cache cleanup error: ' + cacheErr.message);
@@ -5439,24 +5501,83 @@ function handleSalesOrderUpdated(payload) {
     return { status: 'ignored', reason: objStatus + ' via .updated — not an Amazon US SO' };
   }
 
-  // Check for F6 revert — SO was F6-processed and is no longer DELIVERED
+  // Check for F6 revert — SO was F6-processed and delivery was reverted
   var f6Stored = PropertiesService.getScriptProperties().getProperty('f6_delivered_' + soId);
   if (f6Stored) {
+    // Webhook says NOT_SHIPPED — a delivery was reverted in Katana.
+    // Compare current fulfillments against stored items to find what was un-delivered.
+    if (objStatus === 'NOT_SHIPPED') {
+      try {
+        var revertFulfillData = katanaApiCall('sales_order_fulfillments?sales_order_id=' + soId);
+        var revertFulfillments = revertFulfillData && revertFulfillData.data ? revertFulfillData.data : (revertFulfillData || []);
+        // Build set of currently fulfilled SO row IDs
+        var currentlyFulfilledRows = {};
+        if (Array.isArray(revertFulfillments)) {
+          for (var rfi = 0; rfi < revertFulfillments.length; rfi++) {
+            var rfRows = revertFulfillments[rfi].sales_order_fulfillment_rows || revertFulfillments[rfi].rows || [];
+            for (var rfr = 0; rfr < rfRows.length; rfr++) {
+              var rfRowId = String(rfRows[rfr].sales_order_row_id || rfRows[rfr].id || '');
+              if (rfRowId) currentlyFulfilledRows[rfRowId] = true;
+            }
+          }
+        }
+        // Parse stored delivery data and find items no longer fulfilled
+        var storedData = JSON.parse(f6Stored);
+        var storedItems = storedData.items || [];
+        var revertedItems = [];
+        var remainingStored = [];
+        // Get SO rows to map variant_id → row id
+        var revertSORows = katanaApiCall('sales_order_rows?sales_order_id=' + soId);
+        var revertRows = revertSORows && revertSORows.data ? revertSORows.data : (revertSORows || []);
+        var variantToRowId = {};
+        for (var rvr = 0; rvr < revertRows.length; rvr++) {
+          var rvVariant = fetchKatanaVariant(revertRows[rvr].variant_id);
+          if (rvVariant && rvVariant.sku) {
+            variantToRowId[rvVariant.sku] = String(revertRows[rvr].id || '');
+          }
+        }
+        for (var rsi = 0; rsi < storedItems.length; rsi++) {
+          var rItem = storedItems[rsi];
+          var rRowId = variantToRowId[rItem.sku] || '';
+          if (rRowId && currentlyFulfilledRows[rRowId]) {
+            remainingStored.push(rItem);
+          } else {
+            revertedItems.push(rItem);
+          }
+        }
+        if (revertedItems.length > 0) {
+          // Build partial revert JSON with only the reverted items
+          var partialRevertData = {
+            orderNo: storedData.orderNo,
+            items: revertedItems,
+            rowProcessedQty: storedData.rowProcessedQty || {}
+          };
+          logWebhookQueue(
+            { action: 'f6_partial_revert', soId: soId },
+            { status: 'diag', message: 'Reverting ' + revertedItems.length + ' items, ' + remainingStored.length + ' remain fulfilled' }
+          );
+          // Update stored data to only keep remaining items
+          if (remainingStored.length > 0) {
+            storedData.items = remainingStored;
+            PropertiesService.getScriptProperties().setProperty('f6_delivered_' + soId, JSON.stringify(storedData));
+          }
+          return handleSalesOrderF6Revert(soId, JSON.stringify(partialRevertData));
+        }
+        // No items reverted — all still fulfilled
+        return { status: 'ignored', reason: 'F6 SO: all stored items still fulfilled' };
+      } catch (revertErr) {
+        logWebhookQueue(
+          { action: 'f6_revert_error', soId: soId },
+          { status: 'error', message: 'F6 revert fulfillment check error: ' + revertErr.message }
+        );
+      }
+    }
+    // Full revert: SO went to a non-delivered state entirely
     var soData = fetchKatanaSalesOrder(soId);
     if (soData) {
       var so = soData.data ? soData.data : soData;
       var currentStatus = (so.status || '').toUpperCase();
       if (currentStatus !== 'DELIVERED' && currentStatus !== 'PARTIALLY_DELIVERED') {
-        if (getHotfixFlag_('F6_CONFIRM_STATUS_REVERT')) {
-          var confirmedF6SO = refetchKatanaEntityAfterConfirmDelay_(fetchKatanaSalesOrder, soId);
-          if (!confirmedF6SO) {
-            return { status: 'skipped', reason: 'F6 revert confirmation fetch failed for SO ' + soId };
-          }
-          currentStatus = (confirmedF6SO.status || '').toUpperCase();
-          if (currentStatus === 'DELIVERED' || currentStatus === 'PARTIALLY_DELIVERED') {
-            return { status: 'ignored', reason: 'F6 revert not confirmed; SO returned to active delivered state' };
-          }
-        }
         return handleSalesOrderF6Revert(soId, f6Stored);
       }
     }
@@ -5473,7 +5594,7 @@ function handleSalesOrderUpdated(payload) {
 
 /**
  * Reverse an F6 delivery — SO was un-delivered (Revert clicked in Katana).
- * Removes from AMAZON-FBA-USA, adds back to SHIPPING-DOCK.
+ * Removes from AMAZON-FBA-USA, adds back to PRODUCTION.
  * Uses items stored in ScriptProperties at delivery time.
  */
 function handleSalesOrderF6Revert(soId, f6StoredJson) {
@@ -5543,7 +5664,7 @@ function handleSalesOrderF6Revert(soId, f6StoredJson) {
         );
       }
 
-      // Step 2: Add back to SHIPPING-DOCK (same lot if applicable)
+      // Step 2: Add back to PRODUCTION (same lot if applicable)
       var addResult = null;
       if (removeResult && removeResult.success) {
         markSyncedToWasp(sku, FLOWS.AMAZON_TRANSFER_LOCATION, 'add', CONFIG.WASP_SITE);

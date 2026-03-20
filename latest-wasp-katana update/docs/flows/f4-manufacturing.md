@@ -75,12 +75,49 @@ The snapshot is used by:
 - Ingredients: added back to PRODUCTION (restored)
 - Output: removed from PROD-RECEIVING (removed)
 - Snapshot deleted after successful revert
-- `mo_done_` cache cleared to allow re-completion
+- ALL cache keys cleared to allow immediate re-completion
 
 **Revert triggers on:** NOT_STARTED, IN_PROGRESS, BLOCKED, or any non-DONE status.
 All are treated the same — the snapshot presence is what matters.
 
-**Revert window:** 5 days (`REVERT_WINDOW_DAYS`). Older reverts are blocked.
+**Revert window:** 14 days (`REVERT_WINDOW_DAYS`). Older reverts are blocked.
+
+## Critical: How the Revert Cycle Works (Do Not Break)
+
+The complete→revert→re-complete→re-revert cycle depends on these pieces
+working together. If any future change breaks the cycle, check this list.
+
+### On completion (`handleManufacturingOrderDone`):
+1. Execution guard acquired: `mo_done_guard_{moId}` (120s TTL)
+2. Dedup key set: `mo_done_{moId}` (300s TTL)
+3. Ingredients removed from WASP, output added
+4. Snapshot saved: `mo_snapshot_{moRef}` (ScriptProperties, permanent)
+5. ID mapping saved: `mo_id_ref_{moId}` (ScriptProperties, permanent)
+
+### On revert (`reverseMOSnapshot`):
+1. Ingredients added back to WASP, output removed
+2. Snapshot deleted: `mo_snapshot_{moRef}`
+3. ID mapping deleted: `mo_id_ref_{moId}`
+4. Consumed map cleared: `mo_consumed_{moRef}`
+5. **ALL cache keys cleared** (this is what enables the re-completion cycle):
+   - `mo_done_{moId}` — dedup key
+   - `mo_staging_{moId}` — staging key
+   - `mo_done_guard_{moId}` — execution guard
+   - `mo_revert_guard_{moId}` — revert guard
+
+If ANY of these cache keys are not cleared, re-completion will be blocked.
+The symptom is: "MO completion already in progress" or "MO already processed"
+in the webhook queue, and no new Activity entry appears.
+
+### On status confirmation (`F4_CONFIRM_STATUS_REVERT` hotfix):
+When a non-DONE webhook arrives for a completed MO, the code re-fetches the
+MO from Katana API with delays `[0, 2000, 4000, 8000]` to confirm the status.
+If Katana API still returns DONE after all retries (14 seconds), the code
+**proceeds with the revert anyway** — the webhook is trusted over the slow API.
+This is logged as `MO_REVERT_API_SLOW_PROCEEDING`.
+
+**Do not change this back to blocking.** Katana's API propagation is slower
+than its webhooks. Blocking caused reverts to silently fail (the original bug).
 
 ## Smart Retry (Consumed Map)
 
@@ -96,23 +133,22 @@ to prevent double-deduction.
 
 ## Confirmed Working (2026-03-19)
 
-- MO completion ✅ (MO-7460, MO-7462)
+- MO completion ✅ (MO-7460, MO-7462, MO-7463, MO-7464)
 - Lot fallback (single lot) ✅ (MO-7460 — FGJ-IS-1 picked TTFC091A)
 - Lot fallback (qty match) ✅ (multiple lots, only 1 with enough qty)
-- Revert (first cycle) ✅ (MO-7448, MO-7462 — all ingredients restored)
+- Revert (first cycle) ✅ (MO-7448, MO-7462, MO-7463 — all ingredients restored)
+- Revert (full cycle: complete → revert → re-complete → re-revert) ✅ (MO-7464)
 - Revert triggers on IN_PROGRESS and NOT_STARTED ✅
+- WIP status change without snapshot → no action (correct) ✅ (MO-7464)
 - Non-batch ingredients ✅ (PL-GREEN-1, B-PURPLE-4, L-M, NI-B221210, FBA-FRAGILE)
 
 ## Known Limitations
 
-### Rapid complete → revert → complete → revert timing issue
-When an MO is completed, reverted, and re-completed in quick succession (within
-5 minutes), the re-completion may be blocked by the `mo_done_` dedup cache that
-hasn't been cleared yet (revert still in progress when re-completion webhook arrives).
-The re-completion processes via a different path that doesn't save a snapshot,
-so the second revert finds nothing to reverse.
-
-**Workaround:** Wait 5+ minutes between revert and re-completion.
+### ~~Rapid complete → revert → complete → revert timing issue~~ FIXED @423
+Fixed 2026-03-19. `reverseMOSnapshot` now clears execution guards
+(`mo_done_guard_`, `mo_revert_guard_`) alongside dedup keys. Also trusts
+webhook status over slow Katana API confirmation. Full cycle works immediately
+with no waiting period.
 
 ### Partial MO re-processing
 If an MO completes with some ingredients Skipped (e.g., lot not found), the
@@ -154,3 +190,4 @@ Fixed `mo_id_ref_{moId}` mapping and added fallback scan in `getMOSnapshotRaw_`.
 | @402 | 2026-03-18 | Snapshot save fix, revert fix, dedup fix |
 | @412 | 2026-03-19 | WASP lot fallback with qty matching |
 | @416 | 2026-03-19 | Script lock revert (fixed missing Activity entries) |
+| @423 | 2026-03-19 | Fix revert cycle: clear guards on revert, trust webhook over slow API, revert window 5d→14d |
