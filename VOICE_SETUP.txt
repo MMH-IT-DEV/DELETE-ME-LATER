@@ -1,0 +1,79 @@
+VOICE TTS SETUP — Autonomous Instructions
+==========================================
+
+This sets up text-to-speech so Claude Code responses are spoken aloud.
+The user (Erik) uses Wispr Flow for voice INPUT. This handles voice OUTPUT.
+
+WHAT TO DO
+----------
+Everything is already installed. You just need to verify it works.
+
+1. CHECK IF TTS IS ALREADY WORKING
+   The Stop hook should already be configured. Test by responding to the user —
+   if they hear your response spoken aloud, it's working. Skip to step 5.
+
+2. IF NOT WORKING — CHECK THE HOOK EXISTS
+   Read C:\Users\demch\.claude\settings.json
+   Look for the "hooks" → "Stop" section. It should contain:
+   {
+     "hooks": {
+       "Stop": [{
+         "matcher": "",
+         "hooks": [{
+           "type": "command",
+           "command": "python \"C:/Users/demch/.claude/hooks/speak_response.py\""
+         }]
+       }]
+     }
+   }
+   If missing, add it to settings.json.
+
+3. IF HOOK EXISTS BUT NO AUDIO — CHECK THE SCRIPT
+   Read C:\Users\demch\.claude\hooks\speak_response.py
+   It should:
+   - Read JSON from stdin (Stop hook passes last_assistant_message)
+   - Strip markdown
+   - Send text to OpenAI TTS API (model: tts-1, voice: shimmer)
+   - Play via PowerShell MediaPlayer
+   - Max 8000 chars, 300s playback timeout
+
+4. IF SCRIPT EXISTS BUT ERRORS — CHECK API KEY
+   The OpenAI API key should be in:
+   - C:\Users\demch\.claude\settings.json → env.OPENAI_API_KEY
+   - C:\Users\demch\.claude.json → mcpServers.voice-mode.env.OPENAI_API_KEY
+
+   IMPORTANT: The key shared in the previous session should be ROTATED.
+   If the key doesn't work, ask Erik to provide a new OpenAI API key.
+
+5. VERIFY WITH A TEST
+   Run this command to test TTS independently:
+
+   echo '{"last_assistant_message": "Hello Erik, voice is working.", "stop_hook_active": false}' | python "C:/Users/demch/.claude/hooks/speak_response.py"
+
+   If you hear audio, it's working.
+
+CONFIGURATION DETAILS
+---------------------
+- Voice: shimmer (female, soft)
+- Model: tts-1 (fast, lower latency)
+- Max chars: 8000 (about 2-3 minutes of audio)
+- Playback timeout: 300 seconds
+- Temp file: %TEMP%\claude_tts.mp3
+- Audio player: PowerShell System.Windows.Media.MediaPlayer
+
+TO CHANGE VOICE
+- Edit C:\Users\demch\.claude\hooks\speak_response.py
+- Find: voice="shimmer"
+- Options: alloy (neutral), echo (male), fable (storyteller), onyx (deep male), nova (warm female), shimmer (soft female)
+- Erik chose shimmer after hearing all options
+
+TO CHANGE MAX LENGTH
+- Edit speak_response.py
+- Find: truncate_for_speech(cleaned, max_chars=8000)
+- Increase or decrease as needed
+
+ERIK'S PREFERENCES
+- Wants SHORT responses spoken — long code output is read visually
+- If audio cuts off mid-sentence, increase max_chars
+- The TTS runs AFTER Claude finishes responding — zero impact on thinking time
+- OpenAI TTS cost: ~$0.015 per 1K characters

@@ -207,8 +207,8 @@ var FLOWS = {
   // F5: Order Fulfillment - where to pick from (Shopify orders)
   PICK_FROM_LOCATION: LOCATIONS.SHOPIFY,
 
-  // F3: Amazon Transfer (manual - no webhook) — removes from Kelowna staging
-  AMAZON_TRANSFER_LOCATION: LOCATIONS.SHIPPING,
+  // F6: Amazon FBA shipment — removes from PRODUCTION at MMH Kelowna
+  AMAZON_TRANSFER_LOCATION: LOCATIONS.PRODUCTION,
 
   // F3-Amazon: SO delivered from Amazon USA location → remove from Amazon WASP site
   AMAZON_FBA_KATANA_LOCATION: 'Amazon USA',    // Katana location name that triggers this route

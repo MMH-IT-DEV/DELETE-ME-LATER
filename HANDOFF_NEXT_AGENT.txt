@@ -1,0 +1,110 @@
+HANDOFF — 2026-03-20 Session Start
+====================================
+
+WHO YOU ARE WORKING WITH
+- Erik, founder of MyMagicHealer (MMH)
+- Prefers voice communication — TTS is set up (see VOICE_SETUP.txt)
+- Likes short responses, not walls of text
+- Uses Wispr Flow for voice input (speech-to-text)
+- Wants autonomous agents — do the work, don't ask unnecessary questions
+
+PROJECT OVERVIEW
+- Google Apps Script integration syncing inventory between Katana MRP and WASP InventoryCloud
+- Two separate GAS projects:
+  1. debug/script/ — webhook handler (receives Katana + WASP events, processes inventory changes)
+  2. sync/script/ — sync sheet control panel (manual inventory management, push adjustments)
+- Deployed via clasp from local folders
+
+CRITICAL RULES
+- GAS V8 runtime: use VAR only. No const, let, arrow functions, template literals, for-of.
+- WASP API requires ARRAY payload [{...}] not object {...}
+- clasp push REPLACES all remote files — never add functions only in the remote editor
+
+HOW TO DEPLOY
+- Debug project: cd "latest-wasp-katana update/debug/script" && clasp push --force && clasp deploy -i AKfycbwgacIohk10D3wdNp5EoHQkB1L890-7SMIF3ct6HXopcEgdg_ySS-f6y6QS1hIxe3eIiw -d "description"
+- Sync project: cd "latest-wasp-katana update/sync/script" && clasp push --force
+- Logged in as erik@mymagichealer.com via clasp
+
+FILES TO READ FIRST (in this order)
+1. AGENT_CONTEXT.md — project overview, API rules, key files
+2. HANDOFF.md — folder structure, 5 sync flows, pending tasks
+3. latest-wasp-katana update/docs/flows/f4-manufacturing.md — F4 MO flow (just fixed)
+4. latest-wasp-katana update/debug/issues/fixed-f4-mo-revert-cycle.md — MO revert fix details
+5. latest-wasp-katana update/debug/context/flows/f2-adjustments.md — F2 WASP callout flow
+6. latest-wasp-katana update/debug/context/flows/f3-transfers.md — F3 stock transfer flow
+7. src/HANDOFF_AGENT.txt — detailed file-by-file reference
+
+THE 6 SYNC FLOWS
+| Flow | Direction | Status |
+|------|-----------|--------|
+| F1 | Katana PO received → WASP | Working |
+| F2 | WASP qty add/remove → Katana SA | Working |
+| F3 | Katana stock transfers → WASP (auto-poll) | Working |
+| F4 | Katana MO complete → WASP | Working — fixed revert cycle this session |
+| F5 | ShipStation shipped → WASP SHOPIFY | Working |
+| F6 | Katana SO delivered → Amazon FBA | Partially working — see below |
+
+WHAT WAS DONE THIS SESSION (2026-03-19)
+
+1. Voice TTS setup
+   - OpenAI TTS (shimmer voice) via Claude Code Stop hook
+   - Script: C:\Users\demch\.claude\hooks\speak_response.py
+   - Config: C:\Users\demch\.claude\settings.json (hooks.Stop)
+   - See VOICE_SETUP.txt for full details
+
+2. F4 MO revert cycle FIXED (@423)
+   - Bug 1: Katana API slower than webhooks — revert was blocked. Fix: trust webhook, increased delays to [0,2000,4000,8000]
+   - Bug 2: Execution guards not cleared on revert — re-completion blocked. Fix: clear mo_done_guard_ and mo_revert_guard_ in reverseMOSnapshot
+   - Revert window extended from 5 to 14 days
+   - File: debug/script/02_Handlers.js
+
+3. F6 Amazon FBA flow progress (@432)
+   - Changed remove location from SHIPPING-DOCK to PRODUCTION
+   - Changed activity label from "ShipStation | stage" to "Katana | deliver"
+   - Partial delivery: uses Katana sales_order_fulfillments API, filters to newest fulfillment only
+   - Per-delivery revert: compares current fulfillments against stored data to find reverted items
+   - Failed F6 items show "Skipped" (yellow) instead of "Failed" (red)
+   - File: debug/script/02_Handlers.js, debug/script/00_Config.js
+
+4. Sync sheet onEdit fix
+   - Cost column added at C(3) shifted all Wasp tab columns by 1
+   - Updated onEdit column mappings in sync/script/01_Code.js
+   - Menu "Sync Now" changed from runFullSync (business hours only) to runFullSyncForce
+
+OPEN ISSUES — WHAT NEEDS WORK
+
+F6 Amazon FBA (highest priority):
+- Partial delivery filter works but needs more testing — verify only newest fulfillment items are processed
+- Per-delivery revert needs testing — was just deployed, not yet confirmed working
+- Duplicate activity entries (dedup not catching repeated PARTIALLY_DELIVERED webhooks)
+- Remove f6_fulfillment_debug logging from webhook queue once confident
+- No F6 flow doc exists yet (create docs/flows/f6-amazon-fba.md)
+
+F1 PO Receiving:
+- PO-606 partial receive didn't process — "skipped: Recent receive already processed by receive handler"
+- Needs investigation
+
+Sync Sheet:
+- onEdit column fix was pushed but not yet tested by user
+- Sync sheet just got "Sync Now" menu fix (was blocked by business hours check)
+
+General:
+- Some WASP items (CAR-4OZ) keep failing removal — likely not present at PRODUCTION location. Data issue.
+- F6 revert doc needed
+
+KEY DEPLOYMENT IDS
+- Debug script: 1vMGYLeN5iCcLzW9mF0DJB3bT-My_yj1Tv8MVVnaVWKLb4m582ZqyT4Lg
+- Debug deploy ID: AKfycbwgacIohk10D3wdNp5EoHQkB1L890-7SMIF3ct6HXopcEgdg_ySS-f6y6QS1hIxe3eIiw
+- Sync script: 1xRjhF03JdKNxn-3wcqUyOT39HunMgRhEGZzxvzug9_lDCot6vpn_MEeE
+- Debug sheet: 1eX7MCU-Is5CMmROL1PfuhGoB73yRF7dYdyXHqzMYOUQ
+- WASP base: https://mymagichealer.waspinventorycloud.com
+
+WEBHOOK QUEUE LOG
+- Located at: latest-wasp-katana update/docs/webhook-queue-log.txt
+- Erik copies webhook entries from the Debug sheet into this file for debugging
+- Use it to trace what webhooks arrived and how they were processed
+
+SCREENSHOTS
+- Erik takes screenshots and they land in: C:\Users\demch\OneDrive\Pictures\Screenshots\
+- Sort by date, read the newest ones to see what Erik is looking at
+- This is configured in C:\Users\demch\CLAUDE.md
