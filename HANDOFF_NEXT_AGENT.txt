@@ -1,6 +1,30 @@
 HANDOFF — 2026-03-20 Session Start
 ====================================
 
+FIRST THING TO DO (before anything else)
+-----------------------------------------
+1. Set up voice TTS so Erik can hear your responses:
+   a. Check if C:\Users\demch\.claude\hooks\speak_response.py exists
+      - If missing: copy it from config/voice/speak_response.py in this project
+        cp config/voice/speak_response.py C:\Users\demch\.claude\hooks\speak_response.py
+   b. Check if C:\Users\demch\.claude\settings.json has a "hooks" → "Stop" entry
+      - If missing, add this to settings.json:
+        "hooks": {
+          "Stop": [{
+            "matcher": "",
+            "hooks": [{
+              "type": "command",
+              "command": "python \"C:/Users/demch/.claude/hooks/speak_response.py\""
+            }]
+          }]
+        }
+   c. Check that OPENAI_API_KEY exists in settings.json → env
+      - If missing, ask Erik for his OpenAI API key
+   d. Test: echo '{"last_assistant_message": "Hello Erik, voice is working.", "stop_hook_active": false}' | python "C:/Users/demch/.claude/hooks/speak_response.py"
+   e. If audio plays, you're good. If not, see VOICE_SETUP.txt for troubleshooting.
+2. Read this full handoff file to understand the project.
+3. Read the FILES TO READ FIRST section below.
+
 WHO YOU ARE WORKING WITH
 - Erik, founder of MyMagicHealer (MMH)
 - Prefers voice communication — TTS is set up (see VOICE_SETUP.txt)
